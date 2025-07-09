@@ -1,0 +1,21 @@
+# Node
+node_modules/
+
+npm-debug.log*
+
+# Environment
+
+
+# Build
+/build
+/dist
+
+# Misc
+.DS_Store
+*.pem
+uploads/
+
+
+rfp_documents/
+
+*.lock
