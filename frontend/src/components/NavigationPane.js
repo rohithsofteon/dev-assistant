@@ -1,6 +1,63 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, MessageSquare, Trash2, Edit2, Check, X, Filter, Menu, ChevronDown, ChevronLeft, Users } from 'lucide-react';
 
+// Utility function to generate a title from session name or first messages
+const generateSessionTitle = (sessionName, firstMessages = []) => {
+  // If we have first messages, use them to create a title
+  if (firstMessages && firstMessages.length > 0) {
+    const userMessages = firstMessages.filter(msg => msg.role === 'user');
+    if (userMessages.length > 0) {
+      const firstMessage = userMessages[0].content;
+      
+      // Truncate and clean up the title
+      let title = firstMessage.length > 60 ? firstMessage.substring(0, 60) + '...' : firstMessage;
+      
+      // Remove excessive whitespace and line breaks
+      title = title.replace(/\s+/g, ' ').trim();
+      
+      if (title) {
+        return title;
+      }
+    }
+  }
+  
+  // Fallback to session name processing
+  if (sessionName && sessionName !== 'New Chat') {
+    return sessionName.length > 60 ? sessionName.substring(0, 60) + '...' : sessionName;
+  }
+  
+  return 'New Chat';
+};
+
+// Utility function to generate a summary from the first 2 messages
+const generateSessionSummary = (sessionName, firstMessages = []) => {
+  // If we have first messages, use them to create a summary
+  if (firstMessages && firstMessages.length > 0) {
+    const userMessages = firstMessages.filter(msg => msg.role === 'user');
+    if (userMessages.length > 1) {
+      // Use the second message if available, otherwise use first
+      const summaryMessage = userMessages[1] || userMessages[0];
+      let summary = summaryMessage.content;
+      
+      // Truncate and clean up the summary
+      if (summary.length > 80) {
+        summary = summary.substring(0, 80) + '...';
+      }
+      
+      // Remove excessive whitespace and line breaks
+      summary = summary.replace(/\s+/g, ' ').trim();
+      
+      if (summary) {
+        return summary;
+      }
+    } else if (userMessages.length === 1) {
+      return 'First conversation';
+    }
+  }
+  
+  return 'No messages yet';
+};
+
 const NavigationPane = ({
   // Chat session props
   chatSessions,
@@ -32,6 +89,10 @@ const NavigationPane = ({
   const [showTeamDropdown, setShowTeamDropdown] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
+  
+  // Local filter state (temporary selections before applying)
+  const [tempSelectedTeamId, setTempSelectedTeamId] = useState(selectedTeamId);
+  const [tempSelectedModuleId, setTempSelectedModuleId] = useState(selectedModuleId);
 
   // Notify parent of navigation state changes
   useEffect(() => {
@@ -59,10 +120,31 @@ const NavigationPane = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showTeamDropdown, showModuleDropdown]);
 
-  // Filter modules based on selected team
-  const filteredModules = selectedTeamId 
-    ? modules.filter(module => module.team_id === parseInt(selectedTeamId))
+  // Filter modules based on selected team (use temp state for dropdown)
+  const filteredModules = tempSelectedTeamId 
+    ? modules.filter(module => module.team_id === parseInt(tempSelectedTeamId))
     : modules;
+
+  // Check if filters have been applied (different from temp selections)
+  const hasUnappliedChanges = tempSelectedTeamId !== selectedTeamId || tempSelectedModuleId !== selectedModuleId;
+
+  const handleApplyFilters = () => {
+    setSelectedTeamId(tempSelectedTeamId);
+    setSelectedModuleId(tempSelectedModuleId);
+    setShowTeamDropdown(false);
+    setShowModuleDropdown(false);
+  };
+
+  const handleResetFilters = () => {
+    setTempSelectedTeamId('');
+    setTempSelectedModuleId('');
+  };
+
+  // Sync temp state when applied filters change externally
+  useEffect(() => {
+    setTempSelectedTeamId(selectedTeamId);
+    setTempSelectedModuleId(selectedModuleId);
+  }, [selectedTeamId, selectedModuleId]);
 
   const handleSessionRename = async (sessionId, newName) => {
     try {
@@ -178,6 +260,29 @@ const NavigationPane = ({
           alignItems: navExpanded ? 'stretch' : 'center',
           gap: navExpanded ? '0' : '12px',
         }}>
+          {/* Active Filters Indicator */}
+          {navExpanded && (selectedTeamId || selectedModuleId) && (
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{
+                padding: '8px 12px',
+                backgroundColor: '#ffffff',
+                border: '1px solid #e5e7eb',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: '#374151',
+                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)',
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '4px', color: '#1f2937' }}>Active Filters:</div>
+                {selectedTeamId && (
+                  <div>• Team: {userTeams.find(t => t.team_id === parseInt(selectedTeamId))?.name || 'Unknown'}</div>
+                )}
+                {selectedModuleId && (
+                  <div>• Module: {modules.find(m => m.module_id === selectedModuleId)?.name || 'Unknown'}</div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Team Selector Section */}
           {userTeams.length > 1 && (
             <div style={{ marginBottom: navExpanded ? '24px' : '0' }}>
@@ -207,12 +312,13 @@ const NavigationPane = ({
                       fontWeight: '500',
                       cursor: 'pointer',
                       outline: 'none',
-                      transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       textAlign: 'left',
                       fontFamily: 'inherit',
+                      transform: 'translateY(0)',
                     }}
                     onMouseEnter={(e) => { 
                       e.target.style.borderColor = '#d1d5db'; 
@@ -229,13 +335,13 @@ const NavigationPane = ({
                     <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <Users size={16} />
                       <span style={{ fontWeight: '500' }}>
-                        {selectedTeamId
-                          ? (userTeams.find(t => t.team_id === parseInt(selectedTeamId))?.name || 'Team')
+                        {tempSelectedTeamId
+                          ? (userTeams.find(t => t.team_id === parseInt(tempSelectedTeamId))?.name || 'Team')
                           : 'All Teams'}
                       </span>
                     </span>
                     <ChevronDown size={16} style={{ 
-                      transition: 'transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)', 
+                      transition: 'transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)', 
                       transform: showTeamDropdown ? 'rotate(180deg)' : 'none',
                       color: '#6b7280'
                     }} />
@@ -250,7 +356,8 @@ const NavigationPane = ({
                       marginTop: '8px',
                       maxHeight: '280px',
                       overflowY: 'auto',
-                      animation: 'slideDown 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      animation: 'smoothSlideDown 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+                      transformOrigin: 'top',
                       zIndex: 1001,
                     }}>
                       <div
@@ -260,19 +367,19 @@ const NavigationPane = ({
                           color: '#1f2937',
                           fontWeight: '500',
                           borderBottom: '1px solid #f3f4f6',
-                          backgroundColor: !selectedTeamId ? '#e5e5e5' : 'transparent',
-                          transition: 'all 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
+                          backgroundColor: !tempSelectedTeamId ? '#e5e5e5' : 'transparent',
+                          transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                           fontSize: '14px',
                         }}
                         onMouseEnter={(e) => {
-                          if (selectedTeamId) e.target.style.backgroundColor = '#f9fafb';
+                          if (tempSelectedTeamId) e.target.style.backgroundColor = '#f9fafb';
                         }}
                         onMouseLeave={(e) => {
-                          e.target.style.backgroundColor = !selectedTeamId ? '#e5e5e5' : 'transparent';
+                          e.target.style.backgroundColor = !tempSelectedTeamId ? '#e5e5e5' : 'transparent';
                         }}
                         onClick={() => {
-                          setSelectedTeamId('');
-                          setSelectedModuleId('');
+                          setTempSelectedTeamId('');
+                          setTempSelectedModuleId('');
                           setShowTeamDropdown(false);
                         }}
                       >
@@ -284,22 +391,22 @@ const NavigationPane = ({
                           style={{
                             padding: '12px 16px',
                             cursor: 'pointer',
-                            color: selectedTeamId === team.team_id.toString() ? '#000000' : '#374151',
-                            fontWeight: selectedTeamId === team.team_id.toString() ? 600 : 500,
+                            color: tempSelectedTeamId === team.team_id.toString() ? '#000000' : '#374151',
+                            fontWeight: tempSelectedTeamId === team.team_id.toString() ? 600 : 500,
                             borderBottom: idx === userTeams.length - 1 ? 'none' : '1px solid #f3f4f6',
-                            backgroundColor: selectedTeamId === team.team_id.toString() ? '#e5e5e5' : 'transparent',
-                            transition: 'all 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
+                            backgroundColor: tempSelectedTeamId === team.team_id.toString() ? '#e5e5e5' : 'transparent',
+                            transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                             fontSize: '14px',
                           }}
                           onMouseEnter={(e) => {
-                            if (selectedTeamId !== team.team_id.toString()) e.target.style.backgroundColor = '#f9fafb';
+                            if (tempSelectedTeamId !== team.team_id.toString()) e.target.style.backgroundColor = '#f9fafb';
                           }}
                           onMouseLeave={(e) => {
-                            e.target.style.backgroundColor = selectedTeamId === team.team_id.toString() ? '#e5e5e5' : 'transparent';
+                            e.target.style.backgroundColor = tempSelectedTeamId === team.team_id.toString() ? '#e5e5e5' : 'transparent';
                           }}
                           onClick={() => {
-                            setSelectedTeamId(team.team_id.toString());
-                            setSelectedModuleId('');
+                            setTempSelectedTeamId(team.team_id.toString());
+                            setTempSelectedModuleId('');
                             setShowTeamDropdown(false);
                           }}
                         >
@@ -388,11 +495,12 @@ const NavigationPane = ({
                       fontWeight: '500',
                       cursor: 'pointer',
                       outline: 'none',
-                      transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       fontFamily: 'inherit',
+                      transform: 'translateY(0)',
                     }}
                     onMouseEnter={(e) => { 
                       e.target.style.borderColor = '#d1d5db'; 
@@ -410,24 +518,24 @@ const NavigationPane = ({
                       <Filter size={16} />
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                         <span style={{ fontWeight: '500' }}>
-                          {selectedModuleId
-                            ? (filteredModules.find(m => m.module_id === selectedModuleId)?.name || 'Module')
+                          {tempSelectedModuleId
+                            ? (filteredModules.find(m => m.module_id === tempSelectedModuleId)?.name || 'Module')
                             : 'All Modules'}
                         </span>
-                        {selectedModuleId && filteredModules.find(m => m.module_id === selectedModuleId)?.team_name && (
+                        {tempSelectedModuleId && filteredModules.find(m => m.module_id === tempSelectedModuleId)?.team_name && (
                           <span style={{
                             fontSize: '12px',
                             color: '#6b7280',
                             marginTop: '2px',
                             fontWeight: '400'
                           }}>
-                            {filteredModules.find(m => m.module_id === selectedModuleId)?.team_name}
+                            {filteredModules.find(m => m.module_id === tempSelectedModuleId)?.team_name}
                           </span>
                         )}
                       </div>
                     </div>
                     <ChevronDown size={16} style={{ 
-                      transition: 'transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)', 
+                      transition: 'transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)', 
                       transform: showModuleDropdown ? 'rotate(180deg)' : 'none',
                       color: '#6b7280'
                     }} />
@@ -442,7 +550,8 @@ const NavigationPane = ({
                       marginTop: '8px',
                       maxHeight: '280px',
                       overflowY: 'auto',
-                      animation: 'slideDown 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      animation: 'smoothSlideDown 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+                      transformOrigin: 'top',
                       zIndex: 1001,
                     }}>
                       <div
@@ -452,18 +561,18 @@ const NavigationPane = ({
                           color: '#1f2937',
                           fontWeight: '500',
                           borderBottom: '1px solid #f3f4f6',
-                          backgroundColor: !selectedModuleId ? '#e5e5e5' : 'transparent',
-                          transition: 'all 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
+                          backgroundColor: !tempSelectedModuleId ? '#e5e5e5' : 'transparent',
+                          transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                           fontSize: '14px',
                         }}
                         onMouseEnter={(e) => {
-                          if (selectedModuleId) e.target.style.backgroundColor = '#f9fafb';
+                          if (tempSelectedModuleId) e.target.style.backgroundColor = '#f9fafb';
                         }}
                         onMouseLeave={(e) => {
-                          e.target.style.backgroundColor = !selectedModuleId ? '#e5e5e5' : 'transparent';
+                          e.target.style.backgroundColor = !tempSelectedModuleId ? '#e5e5e5' : 'transparent';
                         }}
                         onClick={() => {
-                          setSelectedModuleId('');
+                          setTempSelectedModuleId('');
                           setShowModuleDropdown(false);
                         }}
                       >
@@ -475,21 +584,21 @@ const NavigationPane = ({
                           style={{
                             padding: '12px 16px',
                             cursor: 'pointer',
-                            color: selectedModuleId === module.module_id ? '#000000' : '#374151',
-                            fontWeight: selectedModuleId === module.module_id ? 600 : 500,
+                            color: tempSelectedModuleId === module.module_id ? '#000000' : '#374151',
+                            fontWeight: tempSelectedModuleId === module.module_id ? 600 : 500,
                             borderBottom: idx === filteredModules.length - 1 ? 'none' : '1px solid #f3f4f6',
-                            backgroundColor: selectedModuleId === module.module_id ? '#e5e5e5' : 'transparent',
-                            transition: 'all 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
+                            backgroundColor: tempSelectedModuleId === module.module_id ? '#e5e5e5' : 'transparent',
+                            transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                             fontSize: '14px',
                           }}
                           onMouseEnter={(e) => {
-                            if (selectedModuleId !== module.module_id) e.target.style.backgroundColor = '#f9fafb';
+                            if (tempSelectedModuleId !== module.module_id) e.target.style.backgroundColor = '#f9fafb';
                           }}
                           onMouseLeave={(e) => {
-                            e.target.style.backgroundColor = selectedModuleId === module.module_id ? '#e5e5e5' : 'transparent';
+                            e.target.style.backgroundColor = tempSelectedModuleId === module.module_id ? '#e5e5e5' : 'transparent';
                           }}
                           onClick={() => {
-                            setSelectedModuleId(module.module_id);
+                            setTempSelectedModuleId(module.module_id);
                             setShowModuleDropdown(false);
                           }}
                         >
@@ -544,6 +653,84 @@ const NavigationPane = ({
                   <Filter size={18} />
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Apply Filters Section */}
+          {navExpanded && hasUnappliedChanges && (
+            <div style={{ 
+              marginBottom: '24px',
+              animation: 'smoothFadeIn 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+              transform: 'translateY(0)',
+            }}>
+              <div style={{
+                display: 'flex',
+                gap: '8px',
+                alignItems: 'center'
+              }}>
+                <button
+                  className="nav-pane-btn"
+                  onClick={handleApplyFilters}
+                  style={{
+                    flex: 1,
+                    padding: '10px 14px',
+                    backgroundColor: '#1f2937',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+                    fontFamily: 'inherit',
+                    transform: 'translateY(0)',
+                    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.backgroundColor = '#374151';
+                    e.target.style.transform = 'translateY(-1px)';
+                    e.target.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.2)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.backgroundColor = '#1f2937';
+                    e.target.style.transform = 'translateY(0)';
+                    e.target.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
+                  }}
+                >
+                  Apply Filters
+                </button>
+                <button
+                  className="nav-pane-btn"
+                  onClick={handleResetFilters}
+                  style={{
+                    padding: '10px 12px',
+                    backgroundColor: '#f9fafb',
+                    color: '#374151',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+                    fontFamily: 'inherit',
+                    transform: 'translateY(0)',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.backgroundColor = '#ffffff';
+                    e.target.style.borderColor = '#d1d5db';
+                    e.target.style.transform = 'translateY(-1px)';
+                    e.target.style.color = '#1f2937';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.backgroundColor = '#f9fafb';
+                    e.target.style.borderColor = '#e5e7eb';
+                    e.target.style.transform = 'translateY(0)';
+                    e.target.style.color = '#374151';
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
             </div>
           )}
 
@@ -662,14 +849,15 @@ const NavigationPane = ({
                       key={session.id}
                       className="session-item"
                       style={{
-                        padding: '12px 16px',
+                        padding: '14px 16px',
                         cursor: 'pointer',
                         backgroundColor: currentSessionId === session.id ? '#e5e5e5' : 'transparent',
                         borderRadius: '10px',
-                        marginBottom: '4px',
+                        marginBottom: '6px',
                         transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
                         position: 'relative',
                         border: currentSessionId === session.id ? '1px solid #cccccc' : '1px solid transparent',
+                        minHeight: '60px',
                       }}
                       onClick={() => onSessionSelect(session.id)}
                       onMouseEnter={e => {
@@ -782,12 +970,31 @@ const NavigationPane = ({
                               color: currentSessionId === session.id ? '#1f2937' : '#4b5563',
                               fontWeight: currentSessionId === session.id ? '600' : '500',
                               overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              lineHeight: '1.5',
                               paddingLeft: currentSessionId === session.id ? '8px' : '0',
                             }}>
-                              {session.session_name}
+                              <div style={{
+                                fontSize: '14px',
+                                fontWeight: currentSessionId === session.id ? '600' : '500',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                lineHeight: '1.3',
+                                marginBottom: '2px',
+                              }}>
+                                {generateSessionTitle(session.session_name, session.first_messages)}
+                              </div>
+                              <div style={{
+                                fontSize: '12px',
+                                color: '#6b7280',
+                                fontWeight: '400',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                lineHeight: '1.3',
+                                fontStyle: 'italic',
+                              }}>
+                                {generateSessionSummary(session.session_name, session.first_messages)}
+                              </div>
                             </div>
                             {/* Action buttons - show on hover */}
                             <div style={{
@@ -795,6 +1002,8 @@ const NavigationPane = ({
                               gap: '4px',
                               opacity: 0,
                               transition: 'opacity 0.2s ease',
+                              alignSelf: 'flex-start',
+                              marginTop: '2px',
                             }}
                             className="session-actions"
                             >
@@ -944,6 +1153,34 @@ const NavigationPane = ({
 
       {/* CSS Styles */}
       <style jsx>{`
+        @keyframes smoothSlideDown {
+          from {
+            opacity: 0;
+            transform: translateY(-12px) scale(0.98);
+            max-height: 0;
+          }
+          50% {
+            opacity: 0.7;
+            transform: translateY(-4px) scale(0.99);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            max-height: 280px;
+          }
+        }
+
+        @keyframes smoothFadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        
         @keyframes slideDown {
           from {
             opacity: 0;
@@ -960,7 +1197,7 @@ const NavigationPane = ({
         /* Navigation pane button styles */
         .nav-pane-btn {
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
         }
         
         .nav-pane-btn:focus {
@@ -970,7 +1207,7 @@ const NavigationPane = ({
         
         .session-actions { 
           opacity: 0; 
-          transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
+          transition: opacity 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
         }
         .session-item:hover .session-actions { 
           opacity: 1 !important; 
@@ -985,7 +1222,8 @@ const NavigationPane = ({
         }
         ::-webkit-scrollbar-thumb { 
           background: #e5e7eb; 
-          border-radius: 3px; 
+          border-radius: 3px;
+          transition: background 0.3s ease;
         }
         ::-webkit-scrollbar-thumb:hover { 
           background: #d1d5db; 
@@ -1006,6 +1244,17 @@ const NavigationPane = ({
         * {
           -webkit-font-smoothing: antialiased;
           -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Smooth transitions for all interactive elements */
+        .team-dropdown-parent button,
+        .module-dropdown-parent button {
+          transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        }
+
+        .team-dropdown-parent button:hover,
+        .module-dropdown-parent button:hover {
+          transform: translateY(-1px);
         }
       `}</style>
     </>

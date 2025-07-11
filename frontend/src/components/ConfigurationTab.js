@@ -121,7 +121,7 @@ const ConfigurationTab = ({ onConfigSaved }) => {
     }}>
       <h1 style={{ 
         color: '#111827', 
-        fontSize: '2.4rem', 
+        fontSize: '24px', 
         fontWeight: 800, 
         margin: '40px 0 10px 40px', 
         letterSpacing: '0.5px', 
@@ -131,13 +131,12 @@ const ConfigurationTab = ({ onConfigSaved }) => {
       </h1>
       <p style={{ 
         color: '#6b7280', 
-        fontSize: '1.1rem', 
+        fontSize: '14px', 
         margin: '0 0 36px 40px', 
         textAlign: 'left', 
         maxWidth: 520 
       }}>
-        Personalize your assistant's behavior and tone. These settings affect how the chatbot responds to your queries.
-      </p>
+        </p>
       
       <div style={{
         display: 'grid',
@@ -301,7 +300,7 @@ const ConfigurationTab = ({ onConfigSaved }) => {
           <span style={{ 
             color: configSavedMsg.includes('saved') ? '#059669' : '#dc2626', 
             fontWeight: 600, 
-            fontSize: '15px', 
+            fontSize: '14px', 
             marginLeft: 10 
           }}>
             {configSavedMsg}

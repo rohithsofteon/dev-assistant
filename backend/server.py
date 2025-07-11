@@ -17,8 +17,7 @@ from datetime import datetime
 from db import (get_db_connection, get_modules, create_module, add_document, get_documents,
                 create_team, get_teams, get_user_teams, add_user_to_team, remove_user_from_team,
                 get_team_members, is_team_admin, get_user_by_id, get_all_users_for_team,
-                update_team_admin_status, delete_team, has_only_greetings, 
-                generate_session_name_from_question, update_session_name)
+                update_team_admin_status, delete_team, delete_module)
 import json
 from semantic_indexing import answer_question, answer_question_stream
 import logging
@@ -136,13 +135,6 @@ def login(req: LoginRequest):
         "config": json.loads(config) if config else None
     }
 
-DB_PATH = "DEV_USERS.DB"  # Make sure this is defined
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def execute_with_retry(query, params=(), retries=5, delay=0.3):
     for attempt in range(retries):
         try:
@@ -164,35 +156,34 @@ def execute_with_retry(query, params=(), retries=5, delay=0.3):
 @app.post("/api/register")
 def register(req: RegisterRequest):
     try:
-        # Security: Force role to 0 (regular user) for the public register endpoint
-        # Only global admins can create other global admins via the admin endpoint
         execute_with_retry(
             "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            (req.username, req.password, 0)  # Force role to 0 for security
+            (req.username, req.password, req.role)
         )
 
-        email_user = os.getenv("EMAIL_USER")
-        email_pass = os.getenv("EMAIL_PASS")
-        login_url = "http://localhost:3000/login"
+        # EMAIL FUNCTIONALITY DISABLED - Uncomment below to re-enable email notifications
+        # email_user = os.getenv("EMAIL_USER")
+        # email_pass = os.getenv("EMAIL_PASS")
+        # login_url = "http://localhost:3000/login"
 
-        msg = MIMEText(f"""Hello,
+        # msg = MIMEText(f"""Hello,
 
-Your account has been created.
+# Your account has been created.
 
-Username: {req.username}
-Password: {req.password}
+# Username: {req.username}
+# Password: {req.password}
 
-Please change your password after logging in for the first time here: {login_url}.
+# Please change your password after logging in for the first time here: {login_url}.
 
-Thank you!
-""")
-        msg['Subject'] = 'Welcome to RFP Assistant'
-        msg['From'] = email_user
-        msg['To'] = req.username
+# Thank you!
+# """)
+        # msg['Subject'] = 'Welcome to RFP Assistant'
+        # msg['From'] = email_user
+        # msg['To'] = req.username
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(email_user, email_pass)
-            server.send_message(msg)
+        # with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        #     server.login(email_user, email_pass)
+        #     server.send_message(msg)
 
         return {"success": True}
 
@@ -243,9 +234,9 @@ async def upload_file(
         # Save file info to the database
         doc_id = add_document(module_id, title, file_location, uploaded_by, module_data["team_id"])
 
-        # After saving, process and index the file (text + images)
-        from semantic_indexing import process_and_index
-        process_and_index(file_location, doc_id, module_id)
+        # After saving, ingest the file (text + images) with team_id for strict isolation
+        from semantic_indexing import ingest
+        ingest(file_location, doc_id, module_id, team_id=module_data["team_id"])
 
         return {"success": True, "file_path": file_location, "document_id": doc_id, "module_id": module_id}
     except Exception as e:
@@ -543,9 +534,11 @@ async def ask(request: Request):
         
         question = data.get('question', '')
         module_id = data.get('module_id')
+        selected_team_id = data.get('team_id')  # Get selected team from frontend filter
         user_config = data.get('config')
         chat_history = data.get('chat_history', [])  # Get chat history
         session_id = data.get('session_id')  # Optional session ID for saving
+        use_general_llm = data.get('use_general_llm', False)  # Whether to bypass document search
         
         # Extract user info from token if available
         auth_header = request.headers.get("authorization")
@@ -570,42 +563,141 @@ async def ask(request: Request):
                 logger.warning(f"Invalid module_id format: {module_id}, setting to None")
                 module_id = None
         
-        logger.info(f"Processing question: '{question}' for module_id: {module_id} with {len(chat_history)} history messages")
+        # Convert selected_team_id to integer if it's a string
+        if selected_team_id is not None and selected_team_id != '':
+            try:
+                selected_team_id = int(selected_team_id)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid selected_team_id format: {selected_team_id}, setting to None")
+                selected_team_id = None
+        else:
+            selected_team_id = None
+        
+        logger.info(f"Processing question: '{question}' for module_id: {module_id}, selected_team_id: {selected_team_id} with {len(chat_history)} history messages")
         
         if not question:
             return JSONResponse({"error": "No question provided"}, status_code=400)
         
+        # STRICT ACCESS CONTROL: Validate user access to module/team
+        team_id = None
+        user_team_ids = []
+        
+        # Get user's team memberships for access control
+        if user_id is not None:
+            try:
+                conn = get_db_connection()
+                user_role = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+                is_master_admin = user_role and user_role["role"] == 1
+                
+                if not is_master_admin:
+                    # Get user's team memberships
+                    user_teams = conn.execute(
+                        "SELECT team_id FROM team_members WHERE user_id = ?", 
+                        (user_id,)
+                    ).fetchall()
+                    user_team_ids = [row["team_id"] for row in user_teams]
+                    logger.info(f"User {user_id} is member of teams: {user_team_ids}")
+                else:
+                    # Master admins can access any team - get all team IDs for validation
+                    all_teams = conn.execute("SELECT team_id FROM team_members").fetchall()
+                    user_team_ids = list(set(row["team_id"] for row in all_teams))  # Remove duplicates
+                    logger.info(f"User {user_id} is master admin - access to all teams granted: {user_team_ids}")
+                
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error getting user teams: {e}")
+                return JSONResponse({"error": "Access validation failed"}, status_code=500)
+        
+        # Handle module-specific queries
+        if module_id is not None:
+            if user_id is None:
+                logger.warning("Anonymous user attempted to access module - access denied")
+                return JSONResponse({"error": "Authentication required to access modules"}, status_code=401)
+            
+            try:
+                # Get team_id for the module and validate access
+                conn = get_db_connection()
+                module_result = conn.execute("SELECT team_id FROM module WHERE module_id = ?", (module_id,)).fetchone()
+                
+                if not module_result:
+                    conn.close()
+                    return JSONResponse({"error": "Module not found"}, status_code=404)
+                
+                team_id = module_result["team_id"]
+                conn.close()
+                
+                # Check if user has access to this team
+                if team_id is not None and not is_master_admin:
+                    if team_id not in user_team_ids:
+                        logger.warning(f"User {user_id} attempted to access module {module_id} in team {team_id} without permission")
+                        return JSONResponse({"error": "Access denied: You don't have permission to access this module"}, status_code=403)
+                    
+                logger.info(f"Access granted: User {user_id} can access module {module_id} in team {team_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error validating module access: {e}")
+                return JSONResponse({"error": "Access validation failed"}, status_code=500)
+        
+        # Handle general queries (no specific module)
+        elif user_id is not None:
+            # Validate selected team filter if provided
+            if selected_team_id is not None:
+                if not is_master_admin and selected_team_id not in user_team_ids:
+                    logger.warning(f"User {user_id} attempted to filter by team {selected_team_id} without permission. User teams: {user_team_ids}")
+                    return JSONResponse({"error": "Access denied: You don't have permission to access this team"}, status_code=403)
+            
+            # For general queries, we need to restrict search to user's teams only (unless specific team filter is applied)
+            if not is_master_admin and not user_team_ids and selected_team_id is None:
+                logger.warning(f"User {user_id} has no team memberships - cannot perform general search")
+                return JSONResponse({"error": "You must be a member of at least one team to ask general questions"}, status_code=403)
+            
+            logger.info(f"General query from user {user_id} - will search across user's teams: {user_team_ids}, selected team: {selected_team_id}")
+        else:
+            # Anonymous user asking general question
+            logger.warning("Anonymous user attempted general query - access denied")
+            return JSONResponse({"error": "Authentication required"}, status_code=401)
+
         # Save user question if session_id is provided
         if session_id and user_id:
             try:
-                from db import (add_chat_message, has_only_greetings, 
-                               generate_session_name_from_question, update_session_name)
-                
-                # Check if this is the first substantive question (not just greetings)
-                should_update_name = has_only_greetings(session_id)
-                
+                from db import add_chat_message
                 add_chat_message(session_id, user_id, 'user', question)
-                
-                # If this is the first non-greeting question, update session name
-                if should_update_name:
-                    # Check if the current question is also not just a greeting
-                    import re
-                    clean_question = re.sub(r'[^\w\s]', '', question.lower()).strip()
-                    greeting_patterns = ['hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']
-                    is_greeting = any(pattern in clean_question for pattern in greeting_patterns)
-                    
-                    if not is_greeting and len(clean_question.split()) > 2:
-                        new_session_name = generate_session_name_from_question(question)
-                        update_session_name(session_id, user_id, new_session_name)
-                        logger.info(f"Updated session {session_id} name to: {new_session_name}")
-                
             except Exception as e:
                 logger.warning(f"Failed to save user message: {e}")
         
         def generate():
             try:
                 response_chunks = []
-                for chunk in answer_question_stream(question, module_id=module_id, user_config=user_config, chat_history=chat_history):
+                
+                # RESPECT USER'S FILTER CHOICE: Even admins should be restricted to their selected filters
+                search_team_ids = None
+                
+                if module_id is not None:
+                    # Module-specific query: search only within that module (respect filter)
+                    search_team_ids = None  # module_id and team_id will handle the filtering
+                    logger.info(f"Module-specific query: module_id={module_id}, team_id={team_id}")
+                elif selected_team_id and (selected_team_id in user_team_ids or is_master_admin):
+                    # Team-specific query: search only within selected team (respect filter)
+                    search_team_ids = [selected_team_id]
+                    logger.info(f"Team-filtered query: restricting to team {selected_team_id}")
+                elif not is_master_admin:
+                    # General query for non-admin: search within user's teams
+                    search_team_ids = user_team_ids
+                    logger.info(f"General query for user: searching across teams {user_team_ids}")
+                else:
+                    # General query for admin with no filter: search all (no restrictions)
+                    search_team_ids = None
+                    logger.info(f"General query for admin: no team restrictions")
+                
+                for chunk in answer_question_stream(
+                    question, 
+                    module_id=module_id, 
+                    team_id=team_id, 
+                    user_config=user_config, 
+                    chat_history=chat_history,
+                    user_team_ids=search_team_ids,
+                    use_general_llm=use_general_llm
+                ):
                     response_chunks.append(chunk)
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                 
@@ -635,18 +727,129 @@ async def ask_simple(request: Request):
         data = await request.json()
         question = data.get('question', '')
         module_id = data.get('module_id')
+        selected_team_id = data.get('team_id')  # Get selected team from frontend filter
         
+        # Convert module_id to integer if it's a string
         if module_id is not None:
             try:
                 module_id = int(module_id)
             except (ValueError, TypeError):
                 module_id = None
         
+        # Convert selected_team_id to integer if it's a string
+        if selected_team_id is not None and selected_team_id != '':
+            try:
+                selected_team_id = int(selected_team_id)
+            except (ValueError, TypeError):
+                selected_team_id = None
+        else:
+            selected_team_id = None
+        
         if not question:
             return JSONResponse({"error": "No question provided"}, status_code=400)
         
-        # Use the original answer_question function
-        answer = answer_question(question, module_id=module_id)
+        # Extract user info from token
+        auth_header = request.headers.get("authorization")
+        username = None
+        user_id = None
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+                username = payload.get("username")
+                if username:
+                    from db import get_user_id_by_username
+                    user_id = get_user_id_by_username(username)
+            except jwt.InvalidTokenError:
+                pass
+        
+        # STRICT ACCESS CONTROL: Same logic as /api/ask
+        team_id = None
+        user_team_ids = []
+        
+        # Get user's team memberships for access control
+        if user_id is not None:
+            try:
+                conn = get_db_connection()
+                user_role = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+                is_master_admin = user_role and user_role["role"] == 1
+                
+                if not is_master_admin:
+                    # Get user's team memberships
+                    user_teams = conn.execute(
+                        "SELECT team_id FROM team_members WHERE user_id = ?", 
+                        (user_id,)
+                    ).fetchall()
+                    user_team_ids = [row["team_id"] for row in user_teams]
+                else:
+                    # Master admins can access any team - get all team IDs for validation
+                    all_teams = conn.execute("SELECT team_id FROM team_members").fetchall()
+                    user_team_ids = list(set(row["team_id"] for row in all_teams))  # Remove duplicates
+                
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error getting user teams: {e}")
+                return JSONResponse({"error": "Access validation failed"}, status_code=500)
+        
+        # Handle module-specific queries
+        if module_id is not None:
+            if user_id is None:
+                return JSONResponse({"error": "Authentication required to access modules"}, status_code=401)
+            
+            try:
+                # Get team_id for the module and validate access
+                conn = get_db_connection()
+                module_result = conn.execute("SELECT team_id FROM module WHERE module_id = ?", (module_id,)).fetchone()
+                
+                if not module_result:
+                    conn.close()
+                    return JSONResponse({"error": "Module not found"}, status_code=404)
+                
+                team_id = module_result["team_id"]
+                conn.close()
+                
+                # Check if user has access to this team
+                if team_id is not None and not is_master_admin:
+                    if team_id not in user_team_ids:
+                        return JSONResponse({"error": "Access denied: You don't have permission to access this module"}, status_code=403)
+                    
+            except Exception as e:
+                logger.error(f"Error validating module access: {e}")
+                return JSONResponse({"error": "Access validation failed"}, status_code=500)
+        
+        # Handle general queries (no specific module)
+        elif user_id is not None:
+            # Validate selected team filter if provided
+            if selected_team_id is not None:
+                if not is_master_admin and selected_team_id not in user_team_ids:
+                    return JSONResponse({"error": "Access denied: You don't have permission to access this team"}, status_code=403)
+            
+            if not is_master_admin and not user_team_ids and selected_team_id is None:
+                return JSONResponse({"error": "You must be a member of at least one team to ask general questions"}, status_code=403)
+        else:
+            # Anonymous user asking general question
+            return JSONResponse({"error": "Authentication required"}, status_code=401)
+        
+        # RESPECT USER'S FILTER CHOICE: Even admins should be restricted to their selected filters
+        if module_id is not None:
+            # Module-specific query: use module and team filtering
+            search_team_ids = None
+            logger.info(f"Module-specific query: module_id={module_id}, team_id={team_id}")
+        elif selected_team_id is not None:
+            # Team-specific query: search only within selected team (respect filter)
+            search_team_ids = [selected_team_id] if (selected_team_id in user_team_ids or is_master_admin) else None
+            logger.info(f"Team-filtered query: restricting to team {selected_team_id}, search_team_ids={search_team_ids}")
+        elif not is_master_admin:
+            # General query for non-admin: search within user's teams
+            search_team_ids = user_team_ids
+            logger.info(f"General query for user: searching across teams {user_team_ids}")
+        else:
+            # General query for admin with no filter: search all (no restrictions)
+            search_team_ids = None
+            logger.info(f"General query for admin: no team restrictions")
+        
+        # Use the answer_question function with proper access control
+        answer = answer_question(question, module_id=module_id, team_id=team_id, user_team_ids=search_team_ids)
         return JSONResponse({"answer": answer})
     
     except Exception as e:
@@ -664,40 +867,11 @@ def api_get_documents():
 @app.delete("/api/delete_module/{module_id}")
 def api_delete_module(module_id: int):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # First, get all documents in this module to delete their files
-        cursor.execute("SELECT file_path FROM documents WHERE module_id = ?", (module_id,))
-        file_paths = [row[0] for row in cursor.fetchall()]
-        
-        # Delete embeddings for this module first
-        try:
-            from semantic_indexing import delete_module_embeddings
-            delete_module_embeddings(module_id)
-            logger.info(f"Deleted embeddings for module {module_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete embeddings for module {module_id}: {e}")
-        
-        # Delete document records
-        cursor.execute("DELETE FROM documents WHERE module_id = ?", (module_id,))
-        
-        # Delete module record
-        cursor.execute("DELETE FROM module WHERE module_id = ?", (module_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        # Delete physical files
-        for file_path in file_paths:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception as e:
-                logger.warning(f"Failed to delete file {file_path}: {e}")
-        
+        # Use the new delete_module function from db.py
+        delete_module(module_id)
         return {"success": True}
     except Exception as e:
+        logger.error(f"Error deleting module {module_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/delete_document/{document_id}")
@@ -1043,33 +1217,3 @@ async def clear_session_messages(session_id: int, token: HTTPAuthorizationCreden
     except Exception as e:
         logger.error(f"Error clearing chat messages: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/admin/create-global-admin")
-async def create_global_admin(req: RegisterRequest, token: HTTPAuthorizationCredentials = Depends(security)):
-    try:
-        # Verify the requester is a global admin
-        payload = jwt.decode(token.credentials, JWT_SECRET, algorithms=["HS256"])
-        username = payload["username"]
-        
-        # Check if the requesting user is a global admin
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT role FROM users WHERE username = ?", (username,))
-        user_data = cursor.fetchone()
-        conn.close()
-        
-        if not user_data or user_data[0] != 1:
-            raise HTTPException(status_code=403, detail="Only global admins can create other global admins")
-        
-        # Create the new global admin
-        execute_with_retry(
-            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            (req.username, req.password, 1)  # Force role to 1 for global admin
-        )
-
-        return {"success": True, "message": "Global admin created successfully"}
-
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception as e:
-        return {"success": False, "error": str(e)}

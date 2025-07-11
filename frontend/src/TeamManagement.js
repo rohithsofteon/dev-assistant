@@ -22,12 +22,6 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
   const [newPassword, setNewPassword] = useState(generatePassword());
   const [createUserMsg, setCreateUserMsg] = useState('');
 
-  // Create global admin form
-  const [showCreateGlobalAdmin, setShowCreateGlobalAdmin] = useState(false);
-  const [newGlobalAdminUsername, setNewGlobalAdminUsername] = useState('');
-  const [newGlobalAdminPassword, setNewGlobalAdminPassword] = useState(generatePassword());
-  const [createGlobalAdminMsg, setCreateGlobalAdminMsg] = useState('');
-
   useEffect(() => {
     if (show || embedded) {
       fetchTeams();
@@ -84,6 +78,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
       }
     } catch (error) {
       console.error('Error fetching users:', error);
+      setMessage('Error fetching users');
     }
   };
 
@@ -188,41 +183,38 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
     }
   };
 
-  const handleCreateGlobalAdmin = async (e) => {
-    e.preventDefault();
-    setCreateGlobalAdminMsg('');
-    
-    try {
-      const response = await fetch(`${getBaseUrl()}/api/admin/create-global-admin`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          username: newGlobalAdminUsername,
-          password: newGlobalAdminPassword,
-          role: 1
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setCreateGlobalAdminMsg('Global admin created successfully!');
-        setNewGlobalAdminUsername('');
-        setNewGlobalAdminPassword(generatePassword());
-        setShowCreateGlobalAdmin(false);
-        fetchAllUsers(); // Refresh users list
-      } else {
-        setCreateGlobalAdminMsg(data.error || 'Failed to create global admin');
-      }
-    } catch (error) {
-      setCreateGlobalAdminMsg('Error connecting to server');
-    }
-  };
-
   const handleDeleteTeam = async (teamId) => {
-    if (!window.confirm('Are you sure you want to delete this team? This action cannot be undone.')) {
+    const teamToDelete = teams.find(t => t.team_id === teamId);
+    const teamName = teamToDelete ? teamToDelete.name : 'this team';
+    
+    if (!window.confirm(
+      `⚠️ PERMANENT DELETION WARNING ⚠️\n\n` +
+      `Are you sure you want to delete "${teamName}"?\n\n` +
+      `This will permanently delete:\n` +
+      `• The team and all members\n` +
+      `• All modules belonging to this team\n` +
+      `• All documents and files in those modules\n` +
+      `• All AI embeddings and search data\n` +
+      `• All uploaded files from the server\n\n` +
+      `This action CANNOT be undone!\n\n` +
+      `Type the team name to confirm deletion.`
+    )) {
+      return;
+    }
+    
+    // Second confirmation with team name
+    const confirmation = window.prompt(
+      `To confirm deletion, please type the team name exactly: "${teamName}"`
+    );
+    
+    if (confirmation !== teamName) {
+      if (confirmation !== null) { // User didn't cancel
+        setMessage('Team name does not match. Deletion cancelled.');
+      }
       return;
     }
 
+    setLoading(true);
     try {
       const response = await fetch(`${getBaseUrl()}/api/teams/${teamId}`, {
         method: 'DELETE',
@@ -231,7 +223,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
       
       const data = await response.json();
       if (data.success) {
-        setMessage('Team deleted successfully!');
+        setMessage(`Team "${teamName}" and all associated data deleted successfully!`);
         fetchTeams();
         if (selectedTeam === teamId) {
           setSelectedTeam(null);
@@ -242,6 +234,8 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
       }
     } catch (error) {
       setMessage('Error deleting team');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -384,29 +378,8 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
           <Users size={16} />
           Teams ({teams.length})
         </button>
-        {selectedTeam && (
-          <button
-            style={{
-              background: activeTab === 'members' ? '#111827' : '#ffffff',
-              color: activeTab === 'members' ? '#ffffff' : '#111827',
-              border: activeTab === 'members' ? 'none' : '1px solid #e5e7eb',
-              padding: '12px 24px',
-              borderRadius: 8,
-              cursor: 'pointer',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              fontSize: '14px',
-              transition: 'all 0.2s'
-            }}
-            className="tm-btn-hover"
-            onClick={() => setActiveTab('members')}
-          >
-            <Settings size={16} />
-            Manage Members
-          </button>
-        )}
+        
+        {/* Global Admin Tab - Only visible for role === 1 */}
         {role === 1 && (
           <button
             style={{
@@ -428,6 +401,30 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
           >
             <Shield size={16} />
             Global Admins
+          </button>
+        )}
+        
+        {selectedTeam && (
+          <button
+            style={{
+              background: activeTab === 'members' ? '#111827' : '#ffffff',
+              color: activeTab === 'members' ? '#ffffff' : '#111827',
+              border: activeTab === 'members' ? 'none' : '1px solid #e5e7eb',
+              padding: '12px 24px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '14px',
+              transition: 'all 0.2s'
+            }}
+            className="tm-btn-hover"
+            onClick={() => setActiveTab('members')}
+          >
+            <Settings size={16} />
+            Manage Members
           </button>
         )}
       </div>
@@ -459,7 +456,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
               border: '1px solid #e5e7eb',
               boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
             }}>
-              <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
+              <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>
                 Create New Team
               </h3>
               
@@ -576,7 +573,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
             border: '1px solid #e5e7eb',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
           }}>
-            <h3 style={{ color: '#111827', marginBottom: '20px', fontSize: '18px', fontWeight: 600 }}>
+            <h3 style={{ color: '#111827', marginBottom: '20px', fontSize: '16px', fontWeight: 600 }}>
               Existing Teams ({teams.length})
             </h3>
             
@@ -662,7 +659,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
 
       {activeTab === 'members' && selectedTeam && (
         <div style={{ display: 'grid', gap: '24px' }}>
-          {/* Add Member Section */}
+          {/* Create New User Section */}
           <div style={{
             background: '#ffffff',
             borderRadius: 12,
@@ -670,214 +667,213 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
             border: '1px solid #e5e7eb',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
           }}>
-            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
-              Add New Member
+            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>
+              Create New User
             </h3>
             
-            {/* Create New User Section */}
-            <div style={{ marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid #e5e7eb' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h4 style={{ color: '#374151', fontSize: '16px', fontWeight: 600, margin: 0 }}>
-                  Create New User
-                </h4>
-                {!showCreateUser && (
-                  <button
-                    onClick={() => setShowCreateUser(true)}
+            {!showCreateUser ? (
+              <button
+                style={{
+                  background: '#111827',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '12px 24px',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+                className="tm-btn-hover"
+                onClick={() => setShowCreateUser(true)}
+              >
+                <Plus size={16} />
+                Create User
+              </button>
+            ) : (
+              <form onSubmit={handleCreateUser} style={{ display: 'grid', gap: '16px' }}>
+                <div>
+                  <label style={{ color: '#374151', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
                     style={{
-                      background: 'black',
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: 8,
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                      boxSizing: 'border-box'
+                    }}
+                    required
+                    placeholder="Enter username"
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#374151', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                    Password
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="text"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: 8,
+                        border: '1px solid #d1d5db',
+                        fontSize: '14px',
+                        boxSizing: 'border-box'
+                      }}
+                      required
+                      placeholder="Enter or generate password"
+                    />
+                    <button
+                      type="button"
+                      style={{
+                        padding: '12px',
+                        borderRadius: 8,
+                        border: '1px solid #d1d5db',
+                        background: '#f3f4f6',
+                        color: '#374151',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      onClick={() => setNewPassword(generatePassword())}
+                      title="Generate Password"
+                    >
+                      <RefreshCw size={16} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    type="submit"
+                    style={{
+                      background: '#10B981',
                       color: '#ffffff',
                       border: 'none',
-                      padding: '8px 16px',
-                      borderRadius: 6,
+                      padding: '12px 24px',
+                      borderRadius: 8,
                       cursor: 'pointer',
-                      fontSize: '14px',
-                      fontWeight: 600,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px'
+                      fontWeight: 600
                     }}
                   >
-                    <Plus size={14} />
                     Create User
                   </button>
-                )}
-              </div>
-              
-              {showCreateUser && (
-                <div style={{ background: '#f9fafb', padding: '16px', borderRadius: 8, border: '1px solid #e5e7eb' }}>
-                  <form onSubmit={handleCreateUser} style={{ display: 'grid', gap: '12px' }}>
-                    <div>
-                      <label style={{ color: '#374151', display: 'block', marginBottom: '4px', fontWeight: 500, fontSize: '14px' }}>
-                        Username:
-                      </label>
-                      <input
-                        type="text"
-                        value={newUsername}
-                        onChange={e => setNewUsername(e.target.value)}
-                        required
-                        style={{
-                          width: '100%',
-                          padding: '10px',
-                          borderRadius: 6,
-                          border: '1px solid #d1d5db',
-                          background: '#ffffff',
-                          color: '#111827',
-                          fontSize: '14px',
-                          boxSizing: 'border-box'
-                        }}
-                        placeholder="Enter username"
-                      />
-                    </div>
-                    <div>
-                      <label style={{ color: '#374151', display: 'block', marginBottom: '4px', fontWeight: 500, fontSize: '14px' }}>
-                        Password:
-                      </label>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <input
-                          type="text"
-                          value={newPassword}
-                          onChange={e => setNewPassword(e.target.value)}
-                          required
-                          style={{
-                            flex: 1,
-                            padding: '10px',
-                            borderRadius: 6,
-                            border: '1px solid #d1d5db',
-                            background: '#ffffff',
-                            color: '#111827',
-                            fontSize: '14px',
-                            boxSizing: 'border-box'
-                          }}
-                          placeholder="Enter or generate password"
-                        />
-                        <button
-                          type="button"
-                          style={{
-                            padding: '10px',
-                            borderRadius: 6,
-                            border: '1px solid #d1d5db',
-                            background: '#f3f4f6',
-                            color: '#374151',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                          onClick={() => setNewPassword(generatePassword())}
-                          title="Generate Password"
-                        >
-                          <RefreshCw size={16} />
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button
-                        type="submit"
-                        style={{
-                          background: 'black',
-                          color: '#ffffff',
-                          border: 'none',
-                          borderRadius: 6,
-                          padding: '10px 16px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          flex: 1
-                        }}
-                      >
-                        Create User
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowCreateUser(false);
-                          setCreateUserMsg('');
-                          setNewUsername('');
-                          setNewPassword(generatePassword());
-                        }}
-                        style={{
-                          background: '#f3f4f6',
-                          color: '#374151',
-                          border: '1px solid #d1d5db',
-                          borderRadius: 6,
-                          padding: '10px 16px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          flex: 1
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                  {createUserMsg && (
-                    <div style={{ 
-                      color: createUserMsg.includes('successfully') ? '#059669' : '#dc2626', 
-                      marginTop: '12px', 
-                      fontWeight: 600,
-                      fontSize: '14px'
-                    }}>
-                      {createUserMsg}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateUser(false);
+                      setCreateUserMsg('');
+                      setNewUsername('');
+                      setNewPassword(generatePassword());
+                    }}
+                    style={{
+                      background: '#6B7280',
+                      color: '#ffffff',
+                      border: 'none',
+                      padding: '12px 24px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      fontWeight: 600
+                    }}
+                  >
+                    Cancel
+                  </button>
                 </div>
-              )}
-            </div>
+              </form>
+            )}
+            {createUserMsg && (
+              <div style={{ 
+                color: createUserMsg.includes('successfully') ? '#059669' : '#dc2626', 
+                marginTop: '12px', 
+                fontWeight: 600,
+                fontSize: '14px'
+              }}>
+                {createUserMsg}
+              </div>
+            )}
+          </div>
 
-            {/* Add Existing Users Section */}
-            <div>
-              <h4 style={{ color: '#374151', fontSize: '16px', fontWeight: 600, marginBottom: '16px' }}>
-                Add Existing Users
-              </h4>
-              {availableUsers.length === 0 ? (
-                <p style={{ color: '#6b7280', fontStyle: 'italic' }}>
+          {/* Add Existing Users Section */}
+          <div style={{
+            background: '#ffffff',
+            borderRadius: 12,
+            padding: 24,
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+          }}>
+            <h3 style={{ color: '#111827', marginBottom: '20px', fontSize: '16px', fontWeight: 600 }}>
+              Add Existing Users ({availableUsers.length})
+            </h3>
+            
+            {availableUsers.length === 0 ? (
+              <div style={{
+                textAlign: 'center',
+                padding: '40px 20px',
+                color: '#6b7280'
+              }}>
+                <UserPlus size={48} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+                <p style={{ fontSize: '16px', fontWeight: 500 }}>
                   All existing users are already members of this team.
                 </p>
-              ) : (
-                <div style={{ display: 'grid', gap: '12px', maxHeight: '300px', overflowY: 'auto' }}>
-                  {availableUsers.map((user) => (
-                    <div
-                      key={user.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        background: '#f9fafb',
-                        padding: '12px 16px',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ color: '#111827', fontWeight: 500 }}>{user.username}</span>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '16px' }}>
+                {availableUsers.map((user) => (
+                  <div
+                    key={user.id}
+                    style={{
+                      background: '#f9fafb',
+                      borderRadius: 8,
+                      padding: '20px',
+                      border: '1px solid #e5e7eb',
+                      transition: 'all 0.2s'
+                    }}
+                    className="tm-card-hover"
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#111827', fontWeight: 600, fontSize: '16px' }}>{user.username}</span>
                         {user.role === 1 && (
                           <span style={{
                             background: '#111827',
                             color: '#ffffff',
-                            padding: '2px 6px',
-                            borderRadius: 3,
-                            fontSize: '10px',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            fontSize: '11px',
                             fontWeight: 600,
-                            textTransform: 'uppercase'
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px'
                           }}>
-                            Global Admin
+                            GLOBAL ADMIN
                           </span>
                         )}
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '12px' }}>
                         <button
                           onClick={() => handleAddMember(user.id, false)}
                           style={{
                             background: '#10B981',
                             color: '#ffffff',
                             border: 'none',
-                            padding: '6px 12px',
+                            padding: '8px 16px',
                             borderRadius: 6,
                             cursor: 'pointer',
-                            fontSize: '12px',
-                            fontWeight: 600
+                            fontSize: '14px',
+                            fontWeight: 600,
+                            transition: 'all 0.2s'
                           }}
+                          className="tm-btn-hover"
                         >
                           Add as Member
                         </button>
@@ -887,21 +883,23 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
                             background: '#F59E0B',
                             color: '#ffffff',
                             border: 'none',
-                            padding: '6px 12px',
+                            padding: '8px 16px',
                             borderRadius: 6,
                             cursor: 'pointer',
-                            fontSize: '12px',
-                            fontWeight: 600
+                            fontSize: '14px',
+                            fontWeight: 600,
+                            transition: 'all 0.2s'
                           }}
+                          className="tm-btn-hover"
                         >
                           Add as Admin
                         </button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Current Members */}
@@ -912,7 +910,7 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
             border: '1px solid #e5e7eb',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
           }}>
-            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
+            <h3 style={{ color: '#111827', marginBottom: '20px', fontSize: '16px', fontWeight: 600 }}>
               Team Members ({teamMembers.length})
             </h3>
             
@@ -928,25 +926,351 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
                 </p>
               </div>
             ) : (
-              <div style={{ display: 'grid', gap: '12px' }}>
+              <div style={{ display: 'grid', gap: '16px' }}>
                 {teamMembers.map((member) => (
                   <div
                     key={member.id}
                     style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
                       background: '#f9fafb',
-                      padding: '16px',
                       borderRadius: 8,
-                      border: '1px solid #e5e7eb'
+                      padding: '20px',
+                      border: '1px solid #e5e7eb',
+                      transition: 'all 0.2s'
+                    }}
+                    className="tm-card-hover"
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#111827', fontWeight: 600, fontSize: '16px' }}>
+                          {member.username}
+                        </span>
+                        {member.role === 1 ? (
+                          <span style={{
+                            background: '#111827',
+                            color: '#ffffff',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px'
+                          }}>
+                            GLOBAL ADMIN
+                          </span>
+                        ) : member.is_team_admin ? (
+                          <span style={{
+                            background: '#F59E0B',
+                            color: '#ffffff',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px'
+                          }}>
+                            TEAM ADMIN
+                          </span>
+                        ) : (
+                          <span style={{
+                            background: '#6B7280',
+                            color: '#ffffff',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px'
+                          }}>
+                            MEMBER
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {/* Don't show admin toggle or remove buttons for global admins */}
+                        {member.role !== 1 && (
+                          <>
+                            <button
+                              onClick={() => handleToggleAdmin(member.id, member.is_team_admin)}
+                              style={{
+                                background: member.is_team_admin ? '#EF4444' : '#F59E0B',
+                                color: '#ffffff',
+                                border: 'none',
+                                padding: '8px',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center'
+                              }}
+                              className="tm-icon-hover"
+                              title={member.is_team_admin ? 'Remove Admin' : 'Make Admin'}
+                            >
+                              {member.is_team_admin ? <ShieldOff size={16} /> : <Shield size={16} />}
+                            </button>
+                            <button
+                              onClick={() => handleRemoveMember(member.id)}
+                              style={{
+                                background: '#EF4444',
+                                color: '#ffffff',
+                                border: 'none',
+                                padding: '8px',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center'
+                              }}
+                              className="tm-icon-hover"
+                              title="Remove Member"
+                            >
+                              <UserMinus size={16} />
+                            </button>
+                          </>
+                        )}
+                        {/* For global admins, show they cannot be removed */}
+                        {member.role === 1 && (
+                          <span style={{
+                            color: '#6B7280',
+                            fontSize: '12px',
+                            fontStyle: 'italic',
+                            padding: '8px'
+                          }}>
+                            Global access
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Global Admins Section */}
+      {activeTab === 'admins' && role === 1 && (
+        <div style={{ display: 'grid', gap: '24px' }}>
+          {/* Create Global Admin Section */}
+          <div style={{
+            background: '#ffffff',
+            borderRadius: 12,
+            padding: 24,
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+          }}>
+            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>
+              Create New Global Admin
+            </h3>
+            
+            {!showCreateUser ? (
+              <button
+                style={{
+                  background: '#111827',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '12px 24px',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+                className="tm-btn-hover"
+                onClick={() => setShowCreateUser(true)}
+              >
+                <Plus size={16} />
+                Create Admin
+              </button>
+            ) : (
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                setCreateUserMsg('');
+                setMessage('');
+                setLoading(true);
+                
+                try {
+                  const res = await fetch(`${getBaseUrl()}/api/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      username: newUsername,
+                      password: newPassword,
+                      role: 1,
+                    }),
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    setNewUsername('');
+                    setNewPassword(generatePassword());
+                    const successMsg = 'Global admin created successfully!';
+                    setCreateUserMsg(successMsg);
+                    setMessage(successMsg);
+                    setShowCreateUser(false);
+                    await fetchAllUsers();
+                  } else {
+                    setCreateUserMsg(data.error || 'Failed to create global admin');
+                  }
+                } catch (err) {
+                  setCreateUserMsg('Error connecting to server');
+                } finally {
+                  setLoading(false);
+                }
+              }} style={{ display: 'grid', gap: '16px' }}>
+                <div>
+                  <label style={{ color: '#374151', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: 8,
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                      boxSizing: 'border-box'
+                    }}
+                    required
+                    placeholder="Enter username"
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#374151', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                    Password
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="text"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: 8,
+                        border: '1px solid #d1d5db',
+                        fontSize: '14px',
+                        boxSizing: 'border-box'
+                      }}
+                      required
+                      placeholder="Enter or generate password"
+                    />
+                    <button
+                      type="button"
+                      style={{
+                        padding: '12px',
+                        borderRadius: 8,
+                        border: '1px solid #d1d5db',
+                        background: '#f3f4f6',
+                        color: '#374151',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      onClick={() => setNewPassword(generatePassword())}
+                      title="Generate Password"
+                    >
+                      <RefreshCw size={16} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    style={{
+                      background: '#10B981',
+                      color: '#ffffff',
+                      border: 'none',
+                      padding: '12px 24px',
+                      borderRadius: 8,
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      fontWeight: 600,
+                      opacity: loading ? 0.6 : 1
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <span style={{ color: '#111827', fontWeight: 600 }}>
-                        {member.username}
-                      </span>
-                      {member.role === 1 ? (
+                    {loading ? 'Creating...' : 'Create Admin'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateUser(false);
+                      setCreateUserMsg('');
+                      setNewUsername('');
+                      setNewPassword(generatePassword());
+                    }}
+                    style={{
+                      background: '#6B7280',
+                      color: '#ffffff',
+                      border: 'none',
+                      padding: '12px 24px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      fontWeight: 600
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+            {createUserMsg && (
+              <div style={{ 
+                color: createUserMsg.includes('successfully') ? '#059669' : '#dc2626', 
+                marginTop: '12px', 
+                fontWeight: 600,
+                fontSize: '14px'
+              }}>
+                {createUserMsg}
+              </div>
+            )}
+          </div>
+
+          {/* Global Admins List */}
+          <div style={{
+            background: '#ffffff',
+            borderRadius: 12,
+            padding: 24,
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+          }}>
+            <h3 style={{ color: '#111827', marginBottom: '20px', fontSize: '16px', fontWeight: 600 }}>
+              Existing Global Admins ({allUsers.filter(user => user.role === 1).length})
+            </h3>
+            
+            {allUsers.filter(user => user.role === 1).length === 0 ? (
+              <div style={{
+                textAlign: 'center',
+                padding: '40px 20px',
+                color: '#6b7280'
+              }}>
+                <Shield size={48} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+                <p style={{ fontSize: '16px', fontWeight: 500 }}>
+                  No global admins found.
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '16px' }}>
+                {allUsers.filter(user => user.role === 1).map((admin) => (
+                  <div
+                    key={admin.id}
+                    style={{
+                      background: '#f9fafb',
+                      borderRadius: 8,
+                      padding: '20px',
+                      border: '1px solid #e5e7eb',
+                      transition: 'all 0.2s'
+                    }}
+                    className="tm-card-hover"
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h4 style={{ color: '#111827', margin: '0 0 8px 0', fontSize: '16px', fontWeight: 600 }}>
+                          {admin.username}
+                        </h4>
                         <span style={{
                           background: '#111827',
                           color: '#ffffff',
@@ -959,308 +1283,55 @@ const TeamManagement = ({ show, onClose, role, isTeamAdmin = false, userTeams = 
                         }}>
                           GLOBAL ADMIN
                         </span>
-                      ) : member.is_team_admin ? (
-                        <span style={{
-                          background: '#F59E0B',
+                      </div>
+                      <button
+                        onClick={async () => {
+                          if (!window.confirm(`Are you sure you want to delete global admin "${admin.username}"? This action cannot be undone.`)) {
+                            return;
+                          }
+                          
+                          try {
+                            const response = await fetch(`${getBaseUrl()}/api/delete-user`, {
+                              method: 'POST',
+                              headers: getAuthHeaders(),
+                              body: JSON.stringify({
+                                username: admin.username
+                              })
+                            });
+                            
+                            const data = await response.json();
+                            if (data.success) {
+                              setMessage('Global admin deleted successfully!');
+                              await fetchAllUsers();
+                            } else {
+                              setMessage(data.error || 'Error deleting global admin');
+                            }
+                          } catch (error) {
+                            console.error('Error deleting global admin:', error);
+                            setMessage('Error connecting to server');
+                          }
+                        }}
+                        style={{
+                          background: '#EF4444',
                           color: '#ffffff',
-                          padding: '4px 8px',
-                          borderRadius: 4,
-                          fontSize: '11px',
-                          fontWeight: 600,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px'
-                        }}>
-                          TEAM ADMIN
-                        </span>
-                      ) : (
-                        <span style={{
-                          background: '#6B7280',
-                          color: '#ffffff',
-                          padding: '4px 8px',
-                          borderRadius: 4,
-                          fontSize: '11px',
-                          fontWeight: 600,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px'
-                        }}>
-                          MEMBER
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      {/* Don't show admin toggle or remove buttons for global admins */}
-                      {member.role !== 1 && (
-                        <>
-                          <button
-                            onClick={() => handleToggleAdmin(member.id, member.is_team_admin)}
-                            style={{
-                              background: member.is_team_admin ? '#EF4444' : '#F59E0B',
-                              color: '#ffffff',
-                              border: 'none',
-                              padding: '8px',
-                              borderRadius: 6,
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center'
-                            }}
-                            className="tm-icon-hover"
-                            title={member.is_team_admin ? 'Remove Admin' : 'Make Admin'}
-                          >
-                            {member.is_team_admin ? <ShieldOff size={16} /> : <Shield size={16} />}
-                          </button>
-                          <button
-                            onClick={() => handleRemoveMember(member.id)}
-                            style={{
-                              background: '#EF4444',
-                              color: '#ffffff',
-                              border: 'none',
-                              padding: '8px',
-                              borderRadius: 6,
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center'
-                            }}
-                            className="tm-icon-hover"
-                            title="Remove Member"
-                          >
-                            <UserMinus size={16} />
-                          </button>
-                        </>
-                      )}
-                      {/* For global admins, show they cannot be removed */}
-                      {member.role === 1 && (
-                        <span style={{
-                          color: '#6B7280',
-                          fontSize: '12px',
-                          fontStyle: 'italic',
-                          padding: '8px'
-                        }}>
-                          Global access
-                        </span>
-                      )}
+                          border: 'none',
+                          padding: '8px',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          marginLeft: '16px'
+                        }}
+                        className="tm-icon-hover"
+                        title="Delete Global Admin"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Global Admins Tab - Only for global admins */}
-      {activeTab === 'admins' && role === 1 && (
-        <div style={{ display: 'grid', gap: '24px' }}>
-          {/* Create Global Admin Section */}
-          <div style={{
-            background: '#ffffff',
-            borderRadius: 12,
-            padding: 24,
-            border: '1px solid #e5e7eb',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
-          }}>
-            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
-              Create New Global Administrator
-            </h3>
-            <p style={{ color: '#6B7280', marginBottom: '20px', fontSize: '14px', lineHeight: '1.5' }}>
-              Global administrators have full access to all teams and system management functions. Only create global admin accounts for trusted personnel.
-            </p>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h4 style={{ color: '#374151', fontSize: '16px', fontWeight: 600, margin: 0 }}>
-                New Global Admin
-              </h4>
-              {!showCreateGlobalAdmin && (
-                <button
-                  onClick={() => setShowCreateGlobalAdmin(true)}
-                  style={{
-                    background: '#DC2626',
-                    color: '#ffffff',
-                    border: 'none',
-                    padding: '10px 20px',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    fontWeight: 600,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    boxShadow: '0 2px 4px rgba(220, 38, 38, 0.2)'
-                  }}
-                >
-                  <Shield size={16} />
-                  Create Global Admin
-                </button>
-              )}
-            </div>
-
-            {showCreateGlobalAdmin && (
-              <form onSubmit={handleCreateGlobalAdmin} style={{ marginTop: '16px' }}>
-                <div style={{ display: 'grid', gap: '16px', marginBottom: '20px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#374151' }}>
-                      Username
-                    </label>
-                    <input
-                      type="text"
-                      value={newGlobalAdminUsername}
-                      onChange={(e) => setNewGlobalAdminUsername(e.target.value)}
-                      style={{
-                        width: '100%',
-                        padding: '12px',
-                        border: '1px solid #d1d5db',
-                        borderRadius: 8,
-                        fontSize: '14px'
-                      }}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#374151' }}>
-                      Password
-                    </label>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        value={newGlobalAdminPassword}
-                        onChange={(e) => setNewGlobalAdminPassword(e.target.value)}
-                        style={{
-                          flex: 1,
-                          padding: '12px',
-                          border: '1px solid #d1d5db',
-                          borderRadius: 8,
-                          fontSize: '14px'
-                        }}
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setNewGlobalAdminPassword(generatePassword())}
-                        style={{
-                          background: '#6B7280',
-                          color: '#ffffff',
-                          border: 'none',
-                          padding: '12px 16px',
-                          borderRadius: 8,
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        <RefreshCw size={14} />
-                        Generate
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <button
-                    type="submit"
-                    style={{
-                      background: '#DC2626',
-                      color: '#ffffff',
-                      border: 'none',
-                      padding: '12px 24px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      fontSize: '14px'
-                    }}
-                  >
-                    Create Global Admin
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowCreateGlobalAdmin(false);
-                      setCreateGlobalAdminMsg('');
-                    }}
-                    style={{
-                      background: '#F3F4F6',
-                      color: '#374151',
-                      border: '1px solid #D1D5DB',
-                      padding: '12px 24px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      fontSize: '14px'
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {createGlobalAdminMsg && (
-              <div style={{
-                marginTop: '16px',
-                padding: '12px',
-                borderRadius: 8,
-                backgroundColor: createGlobalAdminMsg.includes('success') ? '#D1FAE5' : '#FEE2E2',
-                color: createGlobalAdminMsg.includes('success') ? '#065F46' : '#991B1B',
-                border: `1px solid ${createGlobalAdminMsg.includes('success') ? '#A7F3D0' : '#FECACA'}`,
-                fontSize: '14px',
-                fontWeight: 600
-              }}>
-                {createGlobalAdminMsg}
-              </div>
-            )}
-          </div>
-
-          {/* List Current Global Admins */}
-          <div style={{
-            background: '#ffffff',
-            borderRadius: 12,
-            padding: 24,
-            border: '1px solid #e5e7eb',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
-          }}>
-            <h3 style={{ color: '#111827', marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
-              Current Global Administrators
-            </h3>
-            
-            <div style={{ display: 'grid', gap: '12px' }}>
-              {allUsers.filter(user => user.role === 1).map(admin => (
-                <div key={admin.id} style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '16px',
-                  background: '#FEF2F2',
-                  borderRadius: 8,
-                  border: '1px solid #FECACA'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <Shield size={20} style={{ color: '#DC2626' }} />
-                    <div>
-                      <div style={{ fontWeight: 600, color: '#111827', fontSize: '14px' }}>
-                        {admin.username}
-                      </div>
-                      <div style={{ color: '#6B7280', fontSize: '12px' }}>
-                        Global Administrator
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ color: '#DC2626', fontSize: '12px', fontWeight: 600 }}>
-                    GLOBAL ACCESS
-                  </div>
-                </div>
-              ))}
-              
-              {allUsers.filter(user => user.role === 1).length === 0 && (
-                <div style={{
-                  textAlign: 'center',
-                  color: '#6B7280',
-                  padding: '32px',
-                  fontSize: '14px'
-                }}>
-                  No global administrators found
-                </div>
-              )}
-            </div>
           </div>
         </div>
       )}

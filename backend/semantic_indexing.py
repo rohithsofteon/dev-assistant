@@ -1,5 +1,6 @@
 """
 multimodal_rag_complete.py - Complete multimodal RAG with OpenAI + OpenCLIP
+Fixed version addressing retrieval and filtering issues
 """
 from __future__ import annotations
 
@@ -203,98 +204,99 @@ def _extract_text_images(file_path: str) -> tuple[str, List[bytes]]:
     
     return text, images
 
-def _simple_entities(text: str) -> List[str]:
-    """Extract simple entities using regex patterns"""
+def _enhanced_entities(text: str) -> List[str]:
+    """Enhanced entity extraction with better patterns"""
     entities = set()
-    # Capitalized words and acronyms
+    
+    # Original patterns - capitalized words and acronyms
     for match in re.finditer(r"[A-Z][a-z]+[A-Za-z0-9_]*|[A-Z0-9_]{2,}", text):
         entities.add(match.group(0))
+    
+    # Technical terms and endpoints
+    for match in re.finditer(r"(?:GET|POST|PUT|DELETE|PATCH)\s+[/\w\-:]+", text):
+        entities.add(match.group(0))
+    
+    # URLs and endpoints
+    for match in re.finditer(r"/[/\w\-:]+", text):
+        entities.add(match.group(0))
+    
+    # Technical keywords
+    tech_keywords = [
+        "endpoint", "endpoints", "API", "backend", "frontend", "database",
+        "service", "server", "client", "authentication", "authorization",
+        "register", "login", "profile", "update", "tech stack", "technology"
+    ]
+    
+    text_lower = text.lower()
+    for keyword in tech_keywords:
+        if keyword.lower() in text_lower:
+            entities.add(keyword)
+    
     return list(entities)
 
-def _sentence_chunk(text: str, max_tokens: int = 200) -> List[Chunk]:
-    """Sentence-aware chunking that prioritizes single-fact isolation"""
+def _sentence_chunk(text: str, max_tokens: int = 150) -> List[Chunk]:
+    """Improved sentence-aware chunking with better context preservation"""
     lines = []
-    for paragraph in text.split("\n"):
+    
+    # Split by paragraphs first
+    paragraphs = text.split("\n")
+    
+    for paragraph in paragraphs:
         paragraph = paragraph.strip()
         if not paragraph:
             continue
         
-        # Split into sentences first
-        sentences = [s.strip() for s in re.split(r"[.?!]", paragraph) if s.strip()]
-        
-        # For each sentence, check if it's a standalone fact
-        for sentence in sentences:
-            entities_in_sentence = _simple_entities(sentence)
-            
-            # If sentence has 1-2 entities and is short, keep it isolated
-            if len(entities_in_sentence) <= 2 and len(sentence.split()) <= 15:
-                lines.append(sentence)  # Isolate single facts
-            else:
-                # For longer sentences, split further if possible
-                # Look for comma-separated clauses
-                clauses = [c.strip() for c in sentence.split(',') if c.strip()]
-                if len(clauses) > 1:
-                    lines.extend(clauses)
-                else:
-                    lines.append(sentence)
+        # Check if paragraph contains endpoints or technical lists
+        if any(keyword in paragraph.lower() for keyword in ["endpoint", "api", "post", "get", "put", "delete", "patch"]):
+            # Keep technical sections together
+            lines.append(paragraph)
+        else:
+            # Split into sentences for regular text
+            sentences = [s.strip() for s in re.split(r"[.?!]", paragraph) if s.strip()]
+            lines.extend(sentences)
     
     chunks = []
     current_chunk = []
     current_tokens = 0
     
-    for sentence in lines:
-        sentence_tokens = len(enc_tok.encode(sentence))
+    for line in lines:
+        line_tokens = len(enc_tok.encode(line))
         
-        # Be more aggressive about creating smaller chunks
-        if current_tokens + sentence_tokens > max_tokens and current_chunk:
-            # Finalize current chunk
+        # If adding this line would exceed max tokens, create a new chunk
+        if current_tokens + line_tokens > max_tokens and current_chunk:
             chunk_text = " ".join(current_chunk)
             chunks.append(Chunk(
                 text=chunk_text,
-                entities=_simple_entities(chunk_text),
+                entities=_enhanced_entities(chunk_text),
                 chunk_id=str(uuid.uuid4())
             ))
             current_chunk = []
             current_tokens = 0
         
-        current_chunk.append(sentence)
-        current_tokens += sentence_tokens
-        
-        # For very important single facts, create individual chunks
-        sentence_entities = _simple_entities(sentence)
-        if len(sentence_entities) == 1 and len(sentence.split()) <= 10:
-            # This looks like a single important fact, isolate it
-            if current_chunk:
-                chunk_text = " ".join(current_chunk)
-                chunks.append(Chunk(
-                    text=chunk_text,
-                    entities=_simple_entities(chunk_text),
-                    chunk_id=str(uuid.uuid4())
-                ))
-                current_chunk = []
-                current_tokens = 0
+        current_chunk.append(line)
+        current_tokens += line_tokens
     
     # Handle remaining content
     if current_chunk:
         chunk_text = " ".join(current_chunk)
         chunks.append(Chunk(
             text=chunk_text,
-            entities=_simple_entities(chunk_text),
+            entities=_enhanced_entities(chunk_text),
             chunk_id=str(uuid.uuid4())
         ))
     
     return chunks
 
-def _embed_and_upsert(chunks: List[Chunk], images: List[bytes], doc_id: str, module_id: int, doc_title: str):
+def _embed_and_upsert(chunks: List[Chunk], images: List[bytes], doc_id: str, module_id: int, doc_title: str, team_id: int | None = None):
     """Embed chunks and images, then upsert to Qdrant"""
     valid_chunks = [c for c in chunks if c.text.strip()]
     if not valid_chunks and not images:
         return
-    
+
     # Embed text chunks
     text_vectors = openai_embed([c.text for c in valid_chunks])
     points = []
-    
+
     # Add text points
     for chunk, vector in zip(valid_chunks, text_vectors):
         if vector:  # Only add if embedding was successful
@@ -308,9 +310,10 @@ def _embed_and_upsert(chunks: List[Chunk], images: List[bytes], doc_id: str, mod
                     "doc_id": doc_id,
                     "doc_title": doc_title,
                     "module_id": module_id,
+                    "team_id": team_id,
                 },
             ))
-    
+
     # Add image points
     for image_bytes in images:
         image_vector = clip_image_embed(image_bytes)
@@ -324,64 +327,108 @@ def _embed_and_upsert(chunks: List[Chunk], images: List[bytes], doc_id: str, mod
                     "doc_id": doc_id,
                     "doc_title": doc_title,
                     "module_id": module_id,
+                    "team_id": team_id,
                 },
             ))
-    
+
     # Upsert to Qdrant
     if points:
         qdrant.upsert(collection_name=COLL_NAME, points=points)
 
-def ingest(file_path: str, doc_id: Optional[str] = None, module_id: int = 0, doc_title: Optional[str] = None):
+def ingest(file_path: str, doc_id: Optional[str] = None, module_id: int = 0, doc_title: Optional[str] = None, team_id: int | None = None):
     """Main ingestion function"""
     doc_id = doc_id or str(uuid.uuid4())
     # Use doc_title if provided, otherwise extract filename from path
     if doc_title is None:
         doc_title = pathlib.Path(file_path).name
     
-    log.info(f"Ingesting {file_path} (doc_id={doc_id}, module={module_id}, title={doc_title})...")
+    # If team_id is not provided, try to get it from the database using module_id
+    if team_id is None and module_id:
+        try:
+            from db import get_db_connection
+            conn = get_db_connection()
+            result = conn.execute("SELECT team_id FROM module WHERE module_id = ?", (module_id,)).fetchone()
+            conn.close()
+            if result:
+                team_id = result["team_id"] if result["team_id"] is not None else None
+                log.info(f"Retrieved team_id {team_id} for module_id {module_id}")
+        except Exception as e:
+            log.warning(f"Could not retrieve team_id for module_id {module_id}: {e}")
+    
+    log.info(f"Ingesting {file_path} (doc_id={doc_id}, module={module_id}, team={team_id}, title={doc_title})...")
     
     text, images = _extract_text_images(file_path)
     chunks = _sentence_chunk(text)
-    _embed_and_upsert(chunks, images, doc_id, module_id, doc_title)
+    _embed_and_upsert(chunks, images, doc_id, module_id, doc_title, team_id)
     
     log.info(f"Indexed {len(chunks)} chunks + {len(images)} images")
 
-def _keyword_filter(query: str) -> qmodels.Filter | None:
-    """Create entity-based filter for retrieval"""
-    entities = _simple_entities(query)
+def _improved_keyword_filter(query: str) -> qmodels.Filter | None:
+    """Improved keyword-based filter for retrieval"""
+    entities = _enhanced_entities(query)
+    
+    # Add query words as potential keywords
+    query_words = [word.lower() for word in query.split() if len(word) > 2]
+    entities.extend(query_words)
+    
     if not entities:
         return None
+    
     return qmodels.Filter(
         should=[qmodels.FieldCondition(key="ents", match=qmodels.MatchAny(any=entities))]
     )
 
-def retrieve(query: str, *, top_k: int = 5, module_id: int | None = None) -> List[Dict]:
-    """Retrieve relevant chunks using multimodal search"""
+def retrieve(query: str, *, top_k: int = 8, module_id: int | None = None, 
+            team_id: int | None = None, user_team_ids: list | None = None) -> List[Dict]:
+    """Retrieve relevant chunks using multimodal search with improved filtering and strict team/module isolation"""
     query = str(query).strip()
+    log.info(f"Retrieving for query: '{query}' with top_k={top_k}, module_id={module_id}, team_id={team_id}, user_team_ids={user_team_ids}")
     
     # Get embeddings
     text_vector = openai_embed([query])[0]
     image_vector = clip_text_embed(query)  # Cross-modal: text query for images
     
-    # Create filters
-    entity_filter = _keyword_filter(query)
+    # Create filters - make entity filter less restrictive
+    entity_filter = _improved_keyword_filter(query)
+    
+    # Build access control filters - STRICT isolation for teams and modules
+    access_conditions = []
+    
+    # STRICT MODULE ISOLATION: If module_id is specified, ONLY return results from that module
     if module_id is not None:
-        module_condition = qmodels.FieldCondition(key="module_id", match=qmodels.MatchValue(value=int(module_id)))
+        access_conditions.append(qmodels.FieldCondition(key="module_id", match=qmodels.MatchValue(value=int(module_id))))
+        log.info(f"STRICT module filter applied: module_id={module_id}")
+    
+    # STRICT TEAM ISOLATION: If team_id is specified, ONLY return results from that team
+    elif team_id is not None:
+        access_conditions.append(qmodels.FieldCondition(key="team_id", match=qmodels.MatchValue(value=int(team_id))))
+        log.info(f"STRICT team filter applied: team_id={team_id}")
+    
+    # USER TEAM ISOLATION: For general queries, restrict to user's teams only
+    elif user_team_ids is not None and len(user_team_ids) > 0:
+        # Use MatchAny to search across multiple teams that the user belongs to
+        team_values = [int(tid) for tid in user_team_ids]
+        access_conditions.append(qmodels.FieldCondition(key="team_id", match=qmodels.MatchAny(any=team_values)))
+        log.info(f"USER team filter applied: user_team_ids={team_values}")
+    
+    # Build final filter with mandatory access control
+    if access_conditions:
         if entity_filter:
-            final_filter = qmodels.Filter(must=[module_condition], should=entity_filter.should)
+            final_filter = qmodels.Filter(must=access_conditions, should=entity_filter.should)
         else:
-            final_filter = qmodels.Filter(must=[module_condition])
+            final_filter = qmodels.Filter(must=access_conditions)
     else:
         final_filter = entity_filter
+        log.warning("No module_id, team_id, or user_team_ids specified - searching across all accessible documents")
     
-    # Search text space
+    # Search text space with higher limit
     text_hits = []
     if text_vector:
         text_hits = qdrant.search(
             collection_name=COLL_NAME,
             query_vector=("text", text_vector),
             query_filter=final_filter,
-            limit=top_k * 2,
+            limit=top_k * 3,  # Get more candidates
             with_payload=True
         )
     
@@ -395,6 +442,30 @@ def retrieve(query: str, *, top_k: int = 5, module_id: int | None = None) -> Lis
             limit=top_k * 2,
             with_payload=True
         )
+    
+    # Broader search without entity filter if not enough results
+    # BUT ALWAYS preserve ALL access control filters for strict team/module isolation
+    if len(text_hits) < 3 and access_conditions:
+        log.info("Trying broader search without entity filter but maintaining strict access control...")
+        # ALWAYS preserve access control filters - NEVER remove team/module isolation
+        broader_filter = qmodels.Filter(must=access_conditions)
+        
+        broader_hits = qdrant.search(
+            collection_name=COLL_NAME,
+            query_vector=("text", text_vector),
+            query_filter=broader_filter,
+            limit=top_k * 2,
+            with_payload=True
+        )
+        
+        # Merge results, avoiding duplicates
+        existing_ids = {hit.id for hit in text_hits}
+        for hit in broader_hits:
+            if hit.id not in existing_ids:
+                text_hits.append(hit)
+    # If no access_conditions (no module/team specified), we already did the broadest possible search above
+    
+    log.info(f"Found {len(text_hits)} text hits and {len(image_hits)} image hits")
     
     # Fuse results
     fused_results = {}
@@ -425,24 +496,56 @@ def _build_system_prompt(config: dict) -> str:
         'Creative': 'creative and engaging'
     }
     
-    persona = persona_map.get(config.get('chat_persona', 'Friendly'), 'friendly and approachable')
+    explanation_map = {
+        'beginner': 'Explain in simple terms with analogies or examples.',
+        'intermediate': 'Explain clearly with moderate technical detail.',
+        'expert': 'Use precise and technical language for an expert audience.'
+    }
     
-    return f"""You are a helpful technical assistant with a {persona} tone.
-You must answer strictly based on the provided context.
-CRITICAL RULES:
-1. Only use information from a SINGLE chunk to answer the question
-2. Never combine or merge facts from different chunks 
-3. Never infer relationships between entities unless they appear in the SAME chunk
-4. If the exact answer is not in ONE chunk, respond: 'Sorry, I dont have enough information to provide the answer.'
-5. Focus only on the chunk that DIRECTLY answers the question
-6. NEVER include source information in your response - just provide the answer
+    tone_map = {
+        'formal': 'Use a professional tone.',
+        'casual': 'Use a relaxed and friendly tone.',
+        'neutral': 'Use a balanced and neutral tone.'
+    }
+    
+    persona = persona_map.get(config.get('chat_persona', 'Friendly'), 'friendly and approachable')
+    explanation_level = explanation_map.get(config.get('explanation_level', 'intermediate'), 'Explain clearly with moderate technical detail.')
+    language_tone = tone_map.get(config.get('language_tone', 'neutral'), 'Use a balanced and neutral tone.')
+    
+    # Build base prompt
+    prompt_parts = [
+        f"You are a helpful technical assistant with a {persona} tone.",
+        "Answer questions based on the provided context from the document chunks.",
+        "",
+        "RULES:",
+        "1. Use the information from the provided chunks to answer the question",
+        "2. If you find relevant information in the chunks, provide a comprehensive answer",
+        "3. If you can't find specific information in the chunks, say \"I don't have enough information to answer that question.\"",
+        "4. Be accurate and don't make up information not present in the chunks",
+        "5. You can combine information from multiple chunks if they're related to the same topic",
+        "",
+        f"EXPLANATION STYLE: {explanation_level}",
+        f"TONE: {language_tone}"
+    ]
+    
+    # Add step-by-step instruction if enabled
+    if config.get('step_by_step_mode', 'Off') == 'On':
+        prompt_parts.append("FORMATTING: Break down complex answers step by step.")
+    
+    # Add follow-up suggestions instruction if enabled
+    if config.get('follow_up_suggestions', 'Disabled') == 'Enabled':
+        prompt_parts.append("FOLLOW-UP: At the end of your answer, suggest 2-3 related follow-up questions the user might ask.")
+    
+    prompt_parts.append("\nFocus on providing helpful, accurate answers based on the document content.")
+    
+    return "\n".join(prompt_parts)
 
-Do not add extra symbols or characters. Only return the grounded factual answer from ONE chunk."""
-
-def answer(query: str, *, top_k: int = 5, module_id: int | None = None, 
-          user_config: dict | None = None, chat_history: list | None = None) -> str:
-    """Answer questions using the multimodal RAG system"""
+def answer(query: str, *, top_k: int = 8, module_id: int | None = None, team_id: int | None = None,
+          user_config: dict | None = None, chat_history: list | None = None, 
+          user_team_ids: list | None = None, use_general_llm: bool = False) -> str:
+    """Answer questions using the multimodal RAG system with strict team/module isolation"""
     query = str(query).strip()
+    log.info(f"Answering query: '{query}' for module_id: {module_id}, team_id: {team_id}, user_team_ids: {user_team_ids}, use_general_llm: {use_general_llm}")
     
     # Handle greetings
     if query.lower() in {'hi', 'hello', 'hey', 'hi!', 'hello!', 'hey!'}:
@@ -453,65 +556,89 @@ def answer(query: str, *, top_k: int = 5, module_id: int | None = None,
         'response_mode': 'concise',
         'show_source': 'Yes',
         'chat_persona': 'Friendly',
+        'explanation_level': 'intermediate',
+        'language_tone': 'neutral',
+        'step_by_step_mode': 'Off',
+        'follow_up_suggestions': 'Disabled',
     }
     
-    # Retrieve relevant chunks
-    hits = retrieve(query, top_k=top_k, module_id=module_id)
+    # If user wants general LLM answer (bypassing document search), call LLM directly
+    if use_general_llm:
+        log.info("Using general LLM without document context as requested by user")
+        return _call_general_llm(query, config, chat_history)
     
-    # Post-filter by entity match - be more strict
-    query_entities = _simple_entities(query)
-    if query_entities:
-        query_entities_lower = [ent.lower() for ent in query_entities]
-        filtered_hits = []
-        for hit in hits:
-            chunk_entities = hit['payload'].get('ents', [])
-            chunk_entities_lower = [e.lower() for e in chunk_entities]
-            # Check if the chunk actually contains the query entities in the text
-            chunk_text = hit['payload'].get('text', '').lower()
-            if any(ent in chunk_entities_lower and ent in chunk_text for ent in query_entities_lower):
-                filtered_hits.append(hit)
-        hits = filtered_hits
+    # Retrieve relevant chunks with strict isolation
+    hits = retrieve(query, top_k=top_k, module_id=module_id, team_id=team_id, user_team_ids=user_team_ids)
+    log.info(f"Retrieved {len(hits)} chunks for query")
+    
+    # Define relevance thresholds
+    MIN_CHUNK_COUNT = 1  # Minimum number of chunks needed
+    MIN_RELEVANCE_SCORE = 0  # Minimum relevance score for chunks
+    
+    # Filter chunks by relevance score and count
+    relevant_chunks = [hit for hit in hits if hit['score'] >= MIN_RELEVANCE_SCORE]
+    log.info(f"Found {len(relevant_chunks)} chunks with relevance score >= {MIN_RELEVANCE_SCORE}")
+    
+    # Check if we have sufficient relevant chunks
+    if len(relevant_chunks) < MIN_CHUNK_COUNT:
+        filter_context = ""
+        if module_id:
+            filter_context = f" in the selected module"
+        elif team_id or user_team_ids:
+            filter_context = f" in the selected team"
         
-        # Additional filtering: prioritize chunks where the question entity appears early in the text
-        if len(hits) > 1:
-            scored_hits = []
-            for hit in hits:
-                chunk_text = hit['payload'].get('text', '').lower()
-                # Score based on how early the entity appears in the chunk
-                min_position = len(chunk_text)
-                for ent in query_entities_lower:
-                    pos = chunk_text.find(ent)
-                    if pos != -1 and pos < min_position:
-                        min_position = pos
-                scored_hits.append((min_position, hit))
+        log.info(f"Insufficient relevant chunks ({len(relevant_chunks)}) for filtered query")
+        return f"No relevant information found{filter_context} for your question. Would you like me to provide a general answer instead? (Please reply 'yes' if you want a general response)"
+    
+    # Less aggressive filtering - use semantic similarity and keyword matching
+    query_lower = query.lower()
+    query_keywords = set(query_lower.split())
+    
+    # Score chunks based on content relevance - use relevant_chunks instead of hits
+    scored_hits = []
+    for hit in relevant_chunks:
+        payload = hit['payload']
+        if payload['type'] == 'text':
+            chunk_text = payload['text'].lower()
             
-            # Sort by position and take top chunks
-            scored_hits.sort(key=lambda x: x[0])
-            hits = [hit for _, hit in scored_hits[:2]]  # Limit to top 2 most relevant
+            # Calculate relevance score
+            relevance_score = 0
+            
+            # Keyword matching
+            for keyword in query_keywords:
+                if keyword in chunk_text:
+                    relevance_score += 1
+            
+            # Special scoring for technical terms
+            if any(term in query_lower for term in ['endpoint', 'api', 'backend']) and \
+               any(term in chunk_text for term in ['endpoint', 'api', 'post', 'get', 'put', 'delete', 'patch']):
+                relevance_score += 3
+            
+            # Boost score with vector similarity
+            final_score = hit['score'] + (relevance_score * 0.1)
+            scored_hits.append((final_score, hit))
+    
+    # Sort by relevance and take top chunks
+    scored_hits.sort(key=lambda x: x[0], reverse=True)
+    hits = [hit for _, hit in scored_hits[:top_k]]
     
     if not hits:
-        return "I don't know from the docs."
+        return "I don't have enough information to answer that question."
     
     # Build context
     context_parts = []
     source_docs = set()
     for i, hit in enumerate(hits):
         payload = hit['payload']
-        # Try to get doc_title, fallback to a more descriptive name
-        doc_title = payload.get('doc_title')
-        if not doc_title:
-            # If no doc_title, try to create a meaningful name from doc_id
-            doc_id = payload.get('doc_id', 'Unknown')
-            doc_title = _get_doc_title_from_db(str(doc_id))
-        
+        doc_title = payload.get('doc_title', 'Unknown Document')
         source_docs.add(doc_title)
         
         if payload['type'] == 'text':
-            context_parts.append(f"[Chunk {i+1} | {doc_title}]\n{payload['text']}")
+            context_parts.append(f"[Chunk {i+1}]\n{payload['text']}")
         else:
-            context_parts.append(f"[Chunk {i+1} | {doc_title}]\n[Image context]")
+            context_parts.append(f"[Chunk {i+1}]\n[Image context]")
     
-    context = "\n\n".join(context_parts)[:6000]  # Limit context size
+    context = "\n\n".join(context_parts)[:8000]  # Increase context limit
     
     # Build messages
     system_prompt = _build_system_prompt(config)
@@ -522,7 +649,7 @@ def answer(query: str, *, top_k: int = 5, module_id: int | None = None,
     
     messages.append({
         "role": "user", 
-        "content": f"Context:\n{context}\n\nQuestion: {query}"
+        "content": f"Context from documents:\n{context}\n\nQuestion: {query}"
     })
     
     # Generate response
@@ -530,17 +657,16 @@ def answer(query: str, *, top_k: int = 5, module_id: int | None = None,
         response = openai_client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
             messages=messages,
-            temperature=0.1,
-            max_tokens=400,
+            temperature=0.5,
+            max_tokens=1000,
         )
         
         answer_text = response.choices[0].message.content.strip()
         
-        # Add source information only if not already present
-        if config.get('show_source') == 'Yes':
+        # Add source information
+        if config.get('show_source') == 'Yes' and answer_text != "I don't have enough information to answer that question.":
             source_list = [str(doc) for doc in source_docs]
             source_text = "\n\nSource: " + ", ".join(sorted(source_list))
-            # Check if source is already in the answer to avoid duplication
             if "Source:" not in answer_text:
                 answer_text += source_text
         
@@ -550,15 +676,163 @@ def answer(query: str, *, top_k: int = 5, module_id: int | None = None,
         log.error(f"ChatCompletion error: {e}")
         return "LLM generation failed."
 
-# FastAPI compatibility functions
-def answer_question(question: str, module_id: int | None = None) -> str:
-    """Simple answer function for FastAPI compatibility (non-streaming)"""
-    return answer(question, module_id=module_id)
+def _call_general_llm(query: str, config: dict, chat_history: list | None = None) -> str:
+    """Call LLM directly without document context for general questions"""
+    try:
+        # Build system prompt for general queries
+        persona_map = {
+            'Friendly': 'friendly and approachable',
+            'Professional': 'professional and formal',
+            'Creative': 'creative and engaging'
+        }
+        
+        explanation_map = {
+            'beginner': 'Explain in simple terms with analogies or examples.',
+            'intermediate': 'Explain clearly with moderate technical detail.',
+            'expert': 'Use precise and technical language for an expert audience.'
+        }
+        
+        tone_map = {
+            'formal': 'Use a professional tone.',
+            'casual': 'Use a relaxed and friendly tone.',
+            'neutral': 'Use a balanced and neutral tone.'
+        }
+        
+        persona = persona_map.get(config.get('chat_persona', 'Friendly'), 'friendly and approachable')
+        explanation_level = explanation_map.get(config.get('explanation_level', 'intermediate'), 'Explain clearly with moderate technical detail.')
+        language_tone = tone_map.get(config.get('language_tone', 'neutral'), 'Use a balanced and neutral tone.')
+        
+        # Build system prompt
+        prompt_parts = [
+            f"You are a helpful assistant with a {persona} tone.",
+            "Since no relevant information was found in the available documents, please provide a general answer to the user's question based on your knowledge.",
+            "",
+            f"EXPLANATION STYLE: {explanation_level}",
+            f"TONE: {language_tone}"
+        ]
+        
+        # Add step-by-step instruction if enabled
+        if config.get('step_by_step_mode', 'Off') == 'On':
+            prompt_parts.append("FORMATTING: Break down complex answers step by step.")
+        
+        # Add follow-up suggestions instruction if enabled
+        if config.get('follow_up_suggestions', 'Disabled') == 'Enabled':
+            prompt_parts.append("FOLLOW-UP: At the end of your answer, suggest 2-3 related follow-up questions the user might ask.")
+        
+        prompt_parts.append("\nIMPORTANT: Always mention that this answer is not based on the available documents but on general knowledge.")
+        
+        system_prompt = "\n".join(prompt_parts)
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if chat_history:
+            messages.extend(chat_history[-6:])  # Keep last 6 messages
+        
+        messages.append({
+            "role": "user", 
+            "content": f"Question: {query}\n\nNote: No relevant information was found in the available documents. Please provide a general answer based on your knowledge."
+        })
+        
+        response = openai_client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=messages,
+            temperature=0.3,  # Slightly higher temperature for general knowledge
+            max_tokens=10000,
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        log.error(f"General LLM call error: {e}")
+        return "I apologize, but I'm unable to provide an answer at the moment due to a technical issue."
 
-def answer_question_stream(question: str, module_id: int | None = None, 
-                          user_config: dict | None = None, chat_history: list | None = None):
-    """Streaming answer function for FastAPI compatibility"""
+def _call_general_llm_stream(query: str, config: dict, chat_history: list | None = None):
+    """Stream general LLM response without document context"""
+    try:
+        # Build system prompt for general queries
+        persona_map = {
+            'Friendly': 'friendly and approachable',
+            'Professional': 'professional and formal',
+            'Creative': 'creative and engaging'
+        }
+        
+        explanation_map = {
+            'beginner': 'Explain in simple terms with analogies or examples.',
+            'intermediate': 'Explain clearly with moderate technical detail.',
+            'expert': 'Use precise and technical language for an expert audience.'
+        }
+        
+        tone_map = {
+            'formal': 'Use a professional tone.',
+            'casual': 'Use a relaxed and friendly tone.',
+            'neutral': 'Use a balanced and neutral tone.'
+        }
+        
+        persona = persona_map.get(config.get('chat_persona', 'Friendly'), 'friendly and approachable')
+        explanation_level = explanation_map.get(config.get('explanation_level', 'intermediate'), 'Explain clearly with moderate technical detail.')
+        language_tone = tone_map.get(config.get('language_tone', 'neutral'), 'Use a balanced and neutral tone.')
+        
+        # Build system prompt
+        prompt_parts = [
+            f"You are a helpful assistant with a {persona} tone.",
+            "Since no relevant information was found in the available documents, please provide a general answer to the user's question based on your knowledge.",
+            "",
+            f"EXPLANATION STYLE: {explanation_level}",
+            f"TONE: {language_tone}"
+        ]
+        
+        # Add step-by-step instruction if enabled
+        if config.get('step_by_step_mode', 'Off') == 'On':
+            prompt_parts.append("FORMATTING: Break down complex answers step by step.")
+        
+        # Add follow-up suggestions instruction if enabled
+        if config.get('follow_up_suggestions', 'Disabled') == 'Enabled':
+            prompt_parts.append("FOLLOW-UP: At the end of your answer, suggest 2-3 related follow-up questions the user might ask.")
+        
+        prompt_parts.append("\nIMPORTANT: Always mention that this answer is not based on the available documents but on general knowledge.")
+        
+        system_prompt = "\n".join(prompt_parts)
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if chat_history:
+            messages.extend(chat_history[-6:])  # Keep last 6 messages
+        
+        messages.append({
+            "role": "user", 
+            "content": f"Question: {query}\n\nNote: No relevant information was found in the available documents. Please provide a general answer based on your knowledge."
+        })
+        
+        stream = openai_client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=messages,
+            temperature=0.3,  # Slightly higher temperature for general knowledge
+            max_tokens=500,
+            stream=True,
+        )
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+        
+    except Exception as e:
+        log.error(f"General LLM streaming error: {e}")
+        yield "I apologize, but I'm unable to provide an answer at the moment due to a technical issue."
+
+# FastAPI compatibility functions
+def answer_question(question: str, module_id: int | None = None, team_id: int | None = None, 
+                   user_config: dict | None = None, chat_history: list | None = None,
+                   user_team_ids: list | None = None, use_general_llm: bool = False) -> str:
+    """Simple answer function for FastAPI compatibility (non-streaming) with strict team/module isolation"""
+    return answer(question, module_id=module_id, team_id=team_id, user_config=user_config, 
+                 chat_history=chat_history, user_team_ids=user_team_ids, use_general_llm=use_general_llm)
+
+def answer_question_stream(question: str, module_id: int | None = None, team_id: int | None = None,
+                          user_config: dict | None = None, chat_history: list | None = None, 
+                          user_team_ids: list | None = None, use_general_llm: bool = False):
+    """Streaming answer function for FastAPI compatibility with strict team/module isolation"""
     query = str(question).strip()
+    log.info(f"Streaming answer for query: '{query}' for module_id: {module_id}, team_id: {team_id}, user_team_ids: {user_team_ids}, use_general_llm: {use_general_llm}")
     
     # Handle greetings
     if query.lower() in {'hi', 'hello', 'hey', 'hi!', 'hello!', 'hey!'}:
@@ -570,44 +844,76 @@ def answer_question_stream(question: str, module_id: int | None = None,
         'response_mode': 'concise',
         'show_source': 'Yes',
         'chat_persona': 'Friendly',
+        'explanation_level': 'intermediate',
+        'language_tone': 'neutral',
+        'step_by_step_mode': 'Off',
+        'follow_up_suggestions': 'Disabled',
     }
     
-    # Retrieve relevant chunks
-    hits = retrieve(query, top_k=5, module_id=module_id)
+    # If user wants general LLM answer (bypassing document search), call LLM directly
+    if use_general_llm:
+        log.info("Using general LLM without document context as requested by user")
+        yield from _call_general_llm_stream(query, config, chat_history)
+        return
     
-    # Post-filter by entity match - be more strict
-    query_entities = _simple_entities(query)
-    if query_entities:
-        query_entities_lower = [ent.lower() for ent in query_entities]
-        filtered_hits = []
-        for hit in hits:
-            chunk_entities = hit['payload'].get('ents', [])
-            chunk_entities_lower = [e.lower() for e in chunk_entities]
-            # Check if the chunk actually contains the query entities in the text
-            chunk_text = hit['payload'].get('text', '').lower()
-            if any(ent in chunk_entities_lower and ent in chunk_text for ent in query_entities_lower):
-                filtered_hits.append(hit)
-        hits = filtered_hits
+    # Retrieve relevant chunks with strict isolation
+    hits = retrieve(query, top_k=8, module_id=module_id, team_id=team_id, user_team_ids=user_team_ids)
+    log.info(f"Retrieved {len(hits)} chunks for streaming query")
+    
+    # Define relevance thresholds
+    MIN_CHUNK_COUNT = 1  # Minimum number of chunks needed
+    MIN_RELEVANCE_SCORE = 0  # Minimum relevance score for chunks
+    
+    # Filter chunks by relevance score and count
+    relevant_chunks = [hit for hit in hits if hit['score'] >= MIN_RELEVANCE_SCORE]
+    log.info(f"Found {len(relevant_chunks)} chunks with relevance score >= {MIN_RELEVANCE_SCORE}")
+    
+    # Check if we have sufficient relevant chunks
+    if len(relevant_chunks) < MIN_CHUNK_COUNT:
+        filter_context = ""
+        if module_id:
+            filter_context = f" in the selected module"
+        elif team_id or user_team_ids:
+            filter_context = f" in the selected team"
         
-        # Additional filtering: prioritize chunks where the question entity appears early in the text
-        if len(hits) > 1:
-            scored_hits = []
-            for hit in hits:
-                chunk_text = hit['payload'].get('text', '').lower()
-                # Score based on how early the entity appears in the chunk
-                min_position = len(chunk_text)
-                for ent in query_entities_lower:
-                    pos = chunk_text.find(ent)
-                    if pos != -1 and pos < min_position:
-                        min_position = pos
-                scored_hits.append((min_position, hit))
+        log.info(f"Insufficient relevant chunks ({len(relevant_chunks)}) for filtered streaming query")
+        yield f"No relevant information found{filter_context} for your question. Would you like me to provide a general answer instead? (Please reply 'yes' if you want a general response)"
+        return
+    
+    # Less aggressive filtering - use semantic similarity and keyword matching
+    query_lower = query.lower()
+    query_keywords = set(query_lower.split())
+    
+    # Score chunks based on content relevance - use relevant_chunks instead of hits
+    scored_hits = []
+    for hit in relevant_chunks:
+        payload = hit['payload']
+        if payload['type'] == 'text':
+            chunk_text = payload['text'].lower()
             
-            # Sort by position and take top chunks
-            scored_hits.sort(key=lambda x: x[0])
-            hits = [hit for _, hit in scored_hits[:2]]  # Limit to top 2 most relevant
+            # Calculate relevance score
+            relevance_score = 0
+            
+            # Keyword matching
+            for keyword in query_keywords:
+                if keyword in chunk_text:
+                    relevance_score += 1
+            
+            # Special scoring for technical terms
+            if any(term in query_lower for term in ['endpoint', 'api', 'backend']) and \
+               any(term in chunk_text for term in ['endpoint', 'api', 'post', 'get', 'put', 'delete', 'patch']):
+                relevance_score += 3
+            
+            # Boost score with vector similarity
+            final_score = hit['score'] + (relevance_score * 0.1)
+            scored_hits.append((final_score, hit))
+    
+    # Sort by relevance and take top chunks
+    scored_hits.sort(key=lambda x: x[0], reverse=True)
+    hits = [hit for _, hit in scored_hits[:8]]
     
     if not hits:
-        yield "Sorry, I don't have enough information to answer that."
+        yield "I don't have enough information to answer that question."
         return
     
     # Build context
@@ -615,21 +921,15 @@ def answer_question_stream(question: str, module_id: int | None = None,
     source_docs = set()
     for i, hit in enumerate(hits):
         payload = hit['payload']
-        # Try to get doc_title, fallback to a more descriptive name
-        doc_title = payload.get('doc_title')
-        if not doc_title:
-            # If no doc_title, try to create a meaningful name from doc_id
-            doc_id = payload.get('doc_id', 'Unknown')
-            doc_title = _get_doc_title_from_db(str(doc_id))
-        
+        doc_title = payload.get('doc_title', 'Unknown Document')
         source_docs.add(doc_title)
         
         if payload['type'] == 'text':
-            context_parts.append(f"[Chunk {i+1} | {doc_title}]\n{payload['text']}")
+            context_parts.append(f"[Chunk {i+1}]\n{payload['text']}")
         else:
-            context_parts.append(f"[Chunk {i+1} | {doc_title}]\n[Image context]")
+            context_parts.append(f"[Chunk {i+1}]\n[Image context]")
     
-    context = "\n\n".join(context_parts)[:6000]  # Limit context size
+    context = "\n\n".join(context_parts)[:8000]  # Increase context limit
     
     # Build messages
     system_prompt = _build_system_prompt(config)
@@ -640,7 +940,7 @@ def answer_question_stream(question: str, module_id: int | None = None,
     
     messages.append({
         "role": "user", 
-        "content": f"Context:\n{context}\n\nQuestion: {query}"
+        "content": f"Context from documents:\n{context}\n\nQuestion: {query}"
     })
     
     # Generate streaming response
@@ -649,8 +949,8 @@ def answer_question_stream(question: str, module_id: int | None = None,
             model=OPENAI_CHAT_MODEL,
             messages=messages,
             temperature=0.1,
-            max_tokens=400,
-            stream=True,  # Enable streaming
+            max_tokens=500,
+            stream=True,
         )
         
         answer_chunks = []
@@ -660,11 +960,10 @@ def answer_question_stream(question: str, module_id: int | None = None,
                 answer_chunks.append(content)
                 yield content
         
-        # Add source information at the end, but only if not already present
+        # Add source information at the end
         if config.get('show_source') == 'Yes':
-            # Check if "Source:" is already in the full response
             full_response = "".join(answer_chunks)
-            if "Source:" not in full_response:
+            if "Source:" not in full_response and "I don't have enough information" not in full_response:
                 source_list = [str(doc) for doc in source_docs]
                 source_text = "\n\nSource: " + ", ".join(sorted(source_list))
                 yield source_text
@@ -673,27 +972,6 @@ def answer_question_stream(question: str, module_id: int | None = None,
         log.error(f"Streaming ChatCompletion error: {e}")
         yield "LLM generation failed."
 
-# CLI interface
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Multimodal RAG with OpenAI + OpenCLIP")
-    parser.add_argument("--ingest", metavar="FILE", help="File to ingest (pdf/docx/txt)")
-    parser.add_argument("--query", metavar="QUESTION", help="Ask a question")
-    parser.add_argument("--module", type=int, default=0, help="Module ID (default: 0)")
-    args = parser.parse_args()
-    
-    if args.ingest:
-        if not pathlib.Path(args.ingest).exists():
-            sys.exit("File not found")
-        ingest(args.ingest, module_id=args.module)
-    
-    if args.query:
-        result = answer(args.query, module_id=args.module)
-        print(textwrap.fill(result, width=100))
-    
-    if not args.ingest and not args.query:
-        print("Usage examples:")
-        print("  python multimodal_rag.py --ingest document.pdf")
-        print("  python multimodal_rag.py --query 'What is the main topic?'")
 def _get_doc_title_from_db(doc_id: str) -> str:
     """Get document title from database using doc_id"""
     try:
@@ -722,3 +1000,163 @@ def _get_doc_title_from_db(doc_id: str) -> str:
     except Exception as e:
         log.warning(f"Failed to get document title from database: {e}")
         return f"Document_{doc_id}"
+
+def delete_document_embeddings(doc_id: int):
+    """Delete all embeddings for a specific document from Qdrant"""
+    try:
+        client = _get_qdrant_client()
+        
+        # Delete all points where payload.doc_id matches this document
+        client.delete(
+            collection_name=COLL_NAME,
+            points_selector=qmodels.FilterSelector(
+                filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="doc_id",
+                            match=qmodels.MatchValue(value=str(doc_id))
+                        )
+                    ]
+                )
+            )
+        )
+        log.info(f"Deleted embeddings for document {doc_id}")
+        
+    except Exception as e:
+        log.error(f"Failed to delete embeddings for document {doc_id}: {e}")
+        raise e
+
+def delete_module_embeddings(module_id: int):
+    """Delete all embeddings for all documents in a specific module from Qdrant"""
+    try:
+        client = _get_qdrant_client()
+        
+        # Delete all points where payload.module_id matches this module
+        client.delete(
+            collection_name=COLL_NAME,
+            points_selector=qmodels.FilterSelector(
+                filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="module_id",
+                            match=qmodels.MatchValue(value=module_id)
+                        )
+                    ]
+                )
+            )
+        )
+        log.info(f"Deleted embeddings for module {module_id}")
+        
+    except Exception as e:
+        log.error(f"Failed to delete embeddings for module {module_id}: {e}")
+        raise e
+
+def delete_team_embeddings(team_id: int):
+    """Delete all embeddings for all documents in a specific team from Qdrant"""
+    try:
+        client = _get_qdrant_client()
+        
+        # Delete all points where payload.team_id matches this team
+        client.delete(
+            collection_name=COLL_NAME,
+            points_selector=qmodels.FilterSelector(
+                filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="team_id",
+                            match=qmodels.MatchValue(value=team_id)
+                        )
+                    ]
+                )
+            )
+        )
+        log.info(f"Deleted embeddings for team {team_id}")
+        
+    except Exception as e:
+        log.error(f"Failed to delete embeddings for team {team_id}: {e}")
+        raise e
+
+def get_module_stats(module_id: int):
+    """Get embedding statistics for a specific module"""
+    try:
+        client = _get_qdrant_client()
+        
+        # Count embeddings for this module
+        result = client.scroll(
+            collection_name=COLL_NAME,
+            scroll_filter=qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="module_id",
+                        match=qmodels.MatchValue(value=module_id)
+                    )
+                ]
+            ),
+            limit=1,  # We just want the count
+            with_payload=False,
+            with_vectors=False
+        )
+        
+        # Get total count by scrolling through all points
+        total_embeddings = 0
+        next_page_offset = None
+        
+        while True:
+            batch_result = client.scroll(
+                collection_name=COLL_NAME,
+                scroll_filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="module_id",
+                            match=qmodels.MatchValue(value=module_id)
+                        )
+                    ]
+                ),
+                limit=100,
+                offset=next_page_offset,
+                with_payload=False,
+                with_vectors=False
+            )
+            
+            total_embeddings += len(batch_result[0])
+            next_page_offset = batch_result[1]
+            
+            if next_page_offset is None:
+                break
+        
+        return {
+            "module_id": module_id,
+            "total_embeddings": total_embeddings,
+            "status": "active" if total_embeddings > 0 else "empty"
+        }
+        
+    except Exception as e:
+        log.error(f"Failed to get stats for module {module_id}: {e}")
+        return {
+            "module_id": module_id,
+            "total_embeddings": 0,
+            "status": "error",
+            "error": str(e)
+        }
+
+# CLI interface
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Multimodal RAG with OpenAI + OpenCLIP")
+    parser.add_argument("--ingest", metavar="FILE", help="File to ingest (pdf/docx/txt)")
+    parser.add_argument("--query", metavar="QUESTION", help="Ask a question")
+    parser.add_argument("--module", type=int, default=0, help="Module ID (default: 0)")
+    args = parser.parse_args()
+    
+    if args.ingest:
+        if not pathlib.Path(args.ingest).exists():
+            sys.exit("File not found")
+        ingest(args.ingest, module_id=args.module)
+    
+    if args.query:
+        result = answer(args.query, module_id=args.module)
+        print(textwrap.fill(result, width=100))
+    
+    if not args.ingest and not args.query:
+        print("Usage examples:")
+        print("  python multimodal_rag.py --ingest document.pdf")
+        print("  python multimodal_rag.py --query 'What is the main topic?'")

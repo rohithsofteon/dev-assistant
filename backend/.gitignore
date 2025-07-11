@@ -4,8 +4,9 @@ node_modules/
 npm-debug.log*
 
 # Environment
-.env
+.env 
 
+/models
 # Build
 /build
 /dist
@@ -15,8 +16,6 @@ npm-debug.log*
 *.pem
 uploads/
 
-# Models (will be downloaded on deployment)
-models/
 
 rfp_documents/
 

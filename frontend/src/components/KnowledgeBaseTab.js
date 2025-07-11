@@ -258,21 +258,20 @@ const KnowledgeBaseTab = () => {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('module_id', selectedModule);
-        formData.append('title', titles[index] || file.name);
+        formData.append('title', titles[index] || file.name.split('.')[0]);
+        formData.append('team_id', selectedTeamId); // Include team_id in the request
 
-        const response = await fetch(`${getBaseUrl()}/api/upload`, {
+        const res = await fetch(`${getBaseUrl()}/api/upload`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${token}`
           },
           body: formData,
         });
 
-        if (!response.ok) {
-          throw new Error(`Failed to upload ${file.name}`);
+        if (!res.ok) {
+          throw new Error(`Failed to upload file: ${file.name}`);
         }
-
-        return response.json();
       });
 
       await Promise.all(uploadPromises);
@@ -364,6 +363,29 @@ const KnowledgeBaseTab = () => {
   }, {});
 
   return (
+    <>
+      <style>
+        {`
+          .module-scrollable::-webkit-scrollbar {
+            width: 8px;
+          }
+          
+          .module-scrollable::-webkit-scrollbar-track {
+            background: #f9fafb;
+            border-radius: 4px;
+          }
+          
+          .module-scrollable::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+            border-radius: 4px;
+            transition: background 0.2s ease;
+          }
+          
+          .module-scrollable::-webkit-scrollbar-thumb:hover {
+            background: #9ca3af;
+          }
+        `}
+      </style>
     <div style={{ padding: '40px', maxWidth: '1600px', margin: '0 auto' }}>
       {showTeamFilter && (
         <div style={{
@@ -448,17 +470,16 @@ const KnowledgeBaseTab = () => {
       <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: '40px', alignItems: 'start' }}>
         <div style={{ opacity: selectedTeamId ? 1 : 0.5, pointerEvents: selectedTeamId ? 'auto' : 'none' }}>
           {/* Upload Documents Section */}
-          <div>
-            <div style={{
-              background: '#ffffff',
-              borderRadius: '16px',
-              padding: '24px',
-              border: '1px solid #e5e7eb',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-            }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '16px',
+            padding: '24px',
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
+          }}>
               <h2 style={{
                 color: '#111827',
-                fontSize: '22px',
+                fontSize: '16px',
                 fontWeight: 600,
                 marginBottom: '24px',
                 display: 'flex',
@@ -612,7 +633,7 @@ const KnowledgeBaseTab = () => {
                             : '2px solid #d1d5db',
                           borderRadius: '12px',
                           color: selectedModule ? '#111827' : '#6b7280',
-                          fontSize: '15px',
+                          fontSize: '14px',
                           fontWeight: selectedModule ? '600' : '500',
                           transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                           boxSizing: 'border-box',
@@ -629,7 +650,7 @@ const KnowledgeBaseTab = () => {
                           background: '#ffffff', 
                           color: '#6b7280',
                           padding: '14px',
-                          fontSize: '15px',
+                          fontSize: '14px',
                           fontWeight: '500',
                         }}>
                           {modules.length > 0 ? '✨ Select a module...' : '⚠️ No modules available'}
@@ -642,7 +663,7 @@ const KnowledgeBaseTab = () => {
                               background: '#ffffff', 
                               color: '#111827',
                               padding: '14px',
-                              fontSize: '15px',
+                              fontSize: '14px',
                               fontWeight: '500',
                               borderBottom: '1px solid #f3f4f6',
                             }}
@@ -706,7 +727,7 @@ const KnowledgeBaseTab = () => {
                           : '3px dashed #d1d5db',
                         borderRadius: '16px',
                         color: files.length > 0 ? '#111827' : '#6b7280',
-                        fontSize: '15px',
+                        fontSize: '14px',
                         fontWeight: files.length > 0 ? '600' : '500',
                         transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                         boxSizing: 'border-box',
@@ -820,7 +841,7 @@ const KnowledgeBaseTab = () => {
                         </div>
 
                         <div style={{ 
-                          fontSize: '11px', 
+                          fontSize: '12px', 
                           opacity: 0.6, 
                           padding: '4px 8px',
                           background: '#f3f4f6',
@@ -830,7 +851,7 @@ const KnowledgeBaseTab = () => {
                           marginTop: '4px',
                           color: '#6b7280'
                         }}>
-                          PDF, DOC, DOCX, PY, TXT, JS files allowed • Folder upload works in modern browsers
+                          PDF, DOC, DOCX, PY, TXT files allowed 
                         </div>
                       </div>
                     </div>
@@ -997,7 +1018,6 @@ const KnowledgeBaseTab = () => {
                 </div>
               </div>
             </div>
-          </div>
         </div>
 
         <div style={{ opacity: selectedTeamId ? 1 : 0.5, pointerEvents: selectedTeamId ? 'auto' : 'none' }}>
@@ -1005,16 +1025,16 @@ const KnowledgeBaseTab = () => {
           <div style={{
             background: '#ffffff',
             borderRadius: '16px',
-            padding: '32px',
+            padding: '24px',
             border: '1px solid #e5e7eb',
             minHeight: '600px',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
           }}>
             <h2 style={{
               color: '#111827',
-              fontSize: '24px',
+              fontSize: '16px',
               fontWeight: 600,
-              marginBottom: '32px',
+              marginBottom: '24px',
               display: 'flex',
               alignItems: 'center',
               gap: '12px',
@@ -1023,10 +1043,9 @@ const KnowledgeBaseTab = () => {
               Browse Documents
             </h2>
 
-            <div style={{ maxHeight: '700px', overflowY: 'auto', paddingRight: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {modules.map((module, index) => (
                 <div key={module.module_id} style={{
-                  marginBottom: '24px',
                   background: '#f9fafb',
                   borderRadius: '12px',
                   border: '1px solid #e5e7eb',
@@ -1045,7 +1064,7 @@ const KnowledgeBaseTab = () => {
                     <div style={{ flex: 1 }}>
                       <h3 style={{
                         color: '#111827',
-                        fontSize: '18px',
+                        fontSize: '16px',
                         fontWeight: 600,
                         margin: 0,
                         marginBottom: '4px',
@@ -1100,9 +1119,21 @@ const KnowledgeBaseTab = () => {
                     </button>
                   </div>
                   
-                  <div style={{ padding: '20px 24px' }}>
+                  <div style={{ padding: '20px 24px', position: 'relative' }}>
                     {documentsByModule[module.module_id]?.length > 0 ? (
-                      <div style={{ display: 'grid', gap: '12px' }}>
+                      <>
+                        <div 
+                          className="module-scrollable"                          style={{ 
+                            display: 'grid', 
+                            gap: '12px',
+                            maxHeight: '250px',
+                            overflowY: 'auto',
+                            paddingRight: '8px',
+                            // Custom scrollbar styling for Firefox
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: '#d1d5db #f9fafb',
+                          }}
+                      >
                         {documentsByModule[module.module_id].map((doc) => (
                           <div key={doc.document_id} style={{
                             display: 'flex',
@@ -1127,7 +1158,7 @@ const KnowledgeBaseTab = () => {
                               </div>
                               <span style={{ 
                                 color: '#111827', 
-                                fontSize: '15px',
+                                fontSize: '14px',
                                 fontWeight: 500,
                               }}>
                                 {doc.title}
@@ -1174,12 +1205,13 @@ const KnowledgeBaseTab = () => {
                           </div>
                         ))}
                       </div>
+                      </>
                     ) : (
                       <div style={{
                         textAlign: 'center',
                         padding: '32px 20px',
                         color: '#6b7280',
-                        fontSize: '15px',
+                        fontSize: '14px',
                       }}>
                         <FileText size={32} color="#9ca3af" style={{ marginBottom: '12px' }} />
                         <p style={{ margin: 0, fontWeight: 500 }}>
@@ -1201,7 +1233,7 @@ const KnowledgeBaseTab = () => {
                   color: '#6b7280',
                 }}>
                   <Database size={48} color="#9ca3af" style={{ marginBottom: '16px' }} />
-                  <h3 style={{ color: '#374151', fontSize: '18px', marginBottom: '8px' }}>
+                  <h3 style={{ color: '#374151', fontSize: '16px', marginBottom: '8px' }}>
                     No modules found
                   </h3>
                   <p style={{ fontSize: '14px', margin: 0, opacity: 0.8 }}>
@@ -1261,7 +1293,7 @@ const KnowledgeBaseTab = () => {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '18px',
+                fontSize: '16px',
                 fontWeight: 'bold',
                 zIndex: 10,
               }}
@@ -1279,7 +1311,7 @@ const KnowledgeBaseTab = () => {
               <h3 style={{ 
                 margin: 0, 
                 color: '#111827', 
-                fontSize: '18px', 
+                fontSize: '16px', 
                 fontWeight: 600 
               }}>
                 {editingDoc.title}
@@ -1312,7 +1344,7 @@ const KnowledgeBaseTab = () => {
                       color: '#6b7280',
                     }}>
                       <div style={{ fontSize: '48px' }}>❌</div>
-                      <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                      <div style={{ fontSize: '16px', fontWeight: 600 }}>
                         No file path available
                       </div>
                     </div>
@@ -1483,7 +1515,7 @@ const KnowledgeBaseTab = () => {
                         color: '#6b7280',
                       }}>
                         <div style={{ fontSize: '48px' }}>📄</div>
-                        <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                        <div style={{ fontSize: '16px', fontWeight: 600 }}>
                           Loading Word Document...
                         </div>
                         <div style={{ fontSize: '14px', textAlign: 'center' }}>
@@ -1517,7 +1549,7 @@ const KnowledgeBaseTab = () => {
                     color: '#6b7280',
                   }}>
                     <div style={{ fontSize: '48px' }}>📄</div>
-                    <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                    <div style={{ fontSize: '16px', fontWeight: 600 }}>
                       Preview not available for .{ext} files
                     </div>
                     <div style={{ fontSize: '14px', textAlign: 'center' }}>
@@ -1542,6 +1574,7 @@ const KnowledgeBaseTab = () => {
         </div>
       )}
     </div>
+    </>
   );
 };
 

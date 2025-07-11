@@ -234,7 +234,7 @@ def create_chat_session(user_id, session_name=None):
     return session_id
 
 def get_user_chat_sessions(user_id):
-    """Get all chat sessions for a user"""
+    """Get all chat sessions for a user with first 2 user messages for summary"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -244,6 +244,19 @@ def get_user_chat_sessions(user_id):
         ORDER BY updated_at DESC
     """, (user_id,))
     sessions = [dict(row) for row in cursor.fetchall()]
+    
+    # Get first 2 user messages for each session for summary generation
+    for session in sessions:
+        cursor.execute("""
+            SELECT role, content 
+            FROM chat_history 
+            WHERE session_id = ? AND role = 'user'
+            ORDER BY timestamp ASC
+            LIMIT 2
+        """, (session['id'],))
+        first_messages = [dict(row) for row in cursor.fetchall()]
+        session['first_messages'] = first_messages
+    
     conn.close()
     return sessions
 
@@ -306,76 +319,6 @@ def update_session_name(session_id, user_id, new_name):
     """, (new_name, session_id, user_id))
     conn.commit()
     conn.close()
-
-def is_session_empty(session_id):
-    """Check if a session has any messages"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT COUNT(*) as count 
-        FROM chat_history 
-        WHERE session_id = ?
-    """, (session_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result["count"] == 0
-
-def has_only_greetings(session_id):
-    """Check if a session only contains greeting messages"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT content 
-        FROM chat_history 
-        WHERE session_id = ? AND role = 'user'
-        ORDER BY timestamp ASC
-    """, (session_id,))
-    messages = cursor.fetchall()
-    conn.close()
-    
-    if not messages:
-        return True
-    
-    greeting_patterns = ['hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']
-    
-    for message in messages:
-        content = message["content"].lower().strip()
-        # Remove punctuation and check if it's a simple greeting
-        import re
-        clean_content = re.sub(r'[^\w\s]', '', content).strip()
-        
-        # If message is longer than 10 words or doesn't match greeting patterns, it's not just a greeting
-        if len(clean_content.split()) > 10:
-            return False
-        
-        is_greeting = any(pattern in clean_content for pattern in greeting_patterns)
-        if not is_greeting and clean_content:  # Non-empty and not a greeting
-            return False
-    
-    return True
-
-def generate_session_name_from_question(question):
-    """Generate a session name based on the first substantive question"""
-    import re
-    
-    # Clean the question
-    clean_question = re.sub(r'[^\w\s]', ' ', question).strip()
-    words = clean_question.split()
-    
-    # Take first 5-7 words and create a meaningful title
-    if len(words) <= 7:
-        name = ' '.join(words)
-    else:
-        name = ' '.join(words[:7]) + '...'
-    
-    # Capitalize appropriately
-    name = name.title()
-    
-    # Ensure it's not too long
-    if len(name) > 50:
-        name = name[:47] + '...'
-    
-    return name if name else "New Chat"
 
 def get_user_id_by_username(username):
     """Get user ID by username"""
@@ -742,26 +685,161 @@ def update_team_admin_status(team_id, user_id, is_admin):
     conn.close()
     return True
 
-def delete_team(team_id):
-    """Delete a team and all its associated data"""
+def delete_module(module_id):
+    """Delete a module and all its associated data including documents, embeddings, and files"""
+    import os
+    import shutil
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Delete team members first (foreign key constraint)
-    cursor.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
+    try:
+        # 1. Get all documents associated with this module
+        documents = cursor.execute("SELECT document_id, file_path FROM documents WHERE module_id = ?", (module_id,)).fetchall()
+        doc_ids = [d["document_id"] for d in documents]
+        
+        # 2. Delete embeddings from Qdrant vector database
+        if doc_ids:
+            try:
+                from semantic_indexing import delete_module_embeddings
+                delete_module_embeddings(module_id)
+                print(f"Deleted embeddings for module {module_id}")
+            except Exception as e:
+                print(f"Warning: Could not delete embeddings for module {module_id}: {e}")
+        
+        # 3. Delete physical files from uploads directory
+        upload_dir = os.path.join(os.path.dirname(__file__), "uploads")
+        module_upload_dir = os.path.join(upload_dir, str(module_id))
+        if os.path.exists(module_upload_dir):
+            try:
+                shutil.rmtree(module_upload_dir)
+                print(f"Deleted upload directory for module {module_id}")
+            except Exception as e:
+                print(f"Warning: Could not delete upload directory {module_upload_dir}: {e}")
+        
+        # 4. Delete documents from database
+        cursor.execute("DELETE FROM documents WHERE module_id = ?", (module_id,))
+        print(f"Deleted {cursor.rowcount} documents from database")
+        
+        # 5. Delete the module itself
+        cursor.execute("DELETE FROM module WHERE module_id = ?", (module_id,))
+        print(f"Deleted module {module_id}")
+        
+        conn.commit()
+        print(f"Successfully deleted module {module_id} and all associated data")
+        return True
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting module {module_id}: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def delete_team(team_id):
+    """Delete a team and all its associated data including modules, documents, embeddings, and files"""
+    import os
+    import shutil
     
-    # Update modules to remove team association
-    cursor.execute("UPDATE module SET team_id = NULL WHERE team_id = ?", (team_id,))
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    # Update documents to remove team association  
-    cursor.execute("UPDATE documents SET team_id = NULL WHERE team_id = ?", (team_id,))
+    try:
+        # 1. Get all modules associated with this team
+        modules = cursor.execute("SELECT module_id FROM module WHERE team_id = ?", (team_id,)).fetchall()
+        module_ids = [m["module_id"] for m in modules]
+        
+        # 2. Delete embeddings for the entire team using the new semantic indexing function
+        try:
+            from semantic_indexing import delete_team_embeddings
+            delete_team_embeddings(team_id)
+            print(f"Deleted embeddings for team {team_id}")
+        except Exception as e:
+            print(f"Warning: Could not delete embeddings for team {team_id}: {e}")
+        
+        if module_ids:
+            # 3. Delete physical files from uploads directory
+            upload_dir = os.path.join(os.path.dirname(__file__), "uploads")
+            for module_id in module_ids:
+                module_upload_dir = os.path.join(upload_dir, str(module_id))
+                if os.path.exists(module_upload_dir):
+                    try:
+                        shutil.rmtree(module_upload_dir)
+                        print(f"Deleted upload directory for module {module_id}")
+                    except Exception as e:
+                        print(f"Warning: Could not delete upload directory {module_upload_dir}: {e}")
+            
+            # 4. Delete documents from database (will cascade if proper foreign keys are set)
+            placeholders = ",".join("?" * len(module_ids))
+            cursor.execute(f"DELETE FROM documents WHERE module_id IN ({placeholders})", module_ids)
+            print(f"Deleted {cursor.rowcount} documents from database")
+            
+            # 5. Delete modules from database  
+            cursor.execute(f"DELETE FROM module WHERE module_id IN ({placeholders})", module_ids)
+            print(f"Deleted {cursor.rowcount} modules from database")
+        
+        # 6. Delete team members (but keep user records in users table)
+        cursor.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
+        print(f"Deleted {cursor.rowcount} team members")
+        
+        # 7. Delete the team itself
+        cursor.execute("DELETE FROM teams WHERE team_id = ?", (team_id,))
+        print(f"Deleted team {team_id}")
+        
+        conn.commit()
+        print(f"Successfully deleted team {team_id} and all associated data")
+        return True
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting team {team_id}: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def update_foreign_key_constraints():
+    """Update foreign key constraints to ensure proper cascading deletes"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    # Delete the team
-    cursor.execute("DELETE FROM teams WHERE team_id = ?", (team_id,))
-    
-    conn.commit()
-    conn.close()
-    return True
+    try:
+        # Enable foreign key constraints
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # Since SQLite doesn't support ALTER TABLE to modify foreign keys directly,
+        # we need to check if the constraints are already correct
+        
+        # Check current schema
+        cursor.execute("PRAGMA table_info(documents)")
+        doc_columns = cursor.fetchall()
+        print("Current documents table schema:", [col for col in doc_columns])
+        
+        cursor.execute("PRAGMA foreign_key_list(documents)")
+        doc_fkeys = cursor.fetchall()
+        print("Current documents foreign keys:", [fk for fk in doc_fkeys])
+        
+        cursor.execute("PRAGMA table_info(module)")
+        module_columns = cursor.fetchall()
+        print("Current module table schema:", [col for col in module_columns])
+        
+        cursor.execute("PRAGMA foreign_key_list(module)")
+        module_fkeys = cursor.fetchall()
+        print("Current module foreign keys:", [fk for fk in module_fkeys])
+        
+        # The current constraints should work, but let's ensure they're enabled
+        cursor.execute("PRAGMA foreign_keys")
+        fk_status = cursor.fetchone()
+        print(f"Foreign keys enabled: {fk_status[0] if fk_status else 'Unknown'}")
+        
+        conn.commit()
+        print("Database constraints checked and updated if needed")
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error updating foreign key constraints: {e}")
+        raise e
+    finally:
+        conn.close()
 
 def clear_chat_messages(session_id, user_id):
     """Clear all messages from a chat session (but keep the session)"""

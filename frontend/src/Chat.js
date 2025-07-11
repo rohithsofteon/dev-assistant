@@ -182,6 +182,45 @@ const Chat = ({
     }
   };
 
+  // Function to generate a concise session name from user's first question
+  const generateSessionName = (question) => {
+    // Remove common question words and clean up
+    const cleanQuestion = question
+      .replace(/^(what|how|when|where|why|who|can|could|would|should|is|are|do|does|did|tell me|explain|help me|show me|please)\s+/i, '')
+      .replace(/\?+$/, '')
+      .replace(/[^\w\s]/g, ' ') // Replace special characters with spaces
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+    
+    // Split into words and take first few meaningful words
+    const words = cleanQuestion.split(/\s+/).filter(word => 
+      word.length > 2 && !['the', 'and', 'for', 'with', 'about', 'from', 'this', 'that', 'you', 'your', 'can', 'will', 'may'].includes(word.toLowerCase())
+    );
+    
+    // Take first 4-6 words or up to 50 characters
+    let sessionName = words.slice(0, 6).join(' ');
+    if (sessionName.length > 50) {
+      sessionName = sessionName.substring(0, 47) + '...';
+    }
+    
+    // Fallback if we couldn't extract meaningful words
+    if (!sessionName || sessionName.length < 3) {
+      // Try to use the original question, cleaned up
+      const fallback = question.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      sessionName = fallback.length > 50 ? fallback.substring(0, 47) + '...' : fallback;
+    }
+    
+    // Final fallback
+    if (!sessionName || sessionName.length < 3) {
+      sessionName = 'Chat Session';
+    }
+    
+    // Capitalize first letter
+    sessionName = sessionName.charAt(0).toUpperCase() + sessionName.slice(1);
+    
+    return sessionName;
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -216,6 +255,11 @@ const Chat = ({
         content: msg.message
       }));
       
+      // Check if user is requesting general LLM response
+      const useGeneralLLM = userMessage.toLowerCase().trim() === 'yes' && 
+        chatHistory.length > 0 && 
+        chatHistory[chatHistory.length - 1].message.includes('Would you like me to provide a general answer instead?');
+      
       const response = await fetch(`${getBaseUrl()}/api/ask`, {
         method: 'POST',
         headers: {
@@ -223,11 +267,13 @@ const Chat = ({
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          question: userMessage,
-          module_id: selectedModuleId || null,
+          question: useGeneralLLM ? chatHistory[chatHistory.length - 2].message : userMessage,
+          module_id: useGeneralLLM ? null : (selectedModuleId || null), // No filtering for general LLM
+          team_id: useGeneralLLM ? null : (selectedTeamId || null), // No filtering for general LLM
           config: userConfig,
           chat_history: recentHistory,
-          session_id: currentSessionId, // Include session ID for automatic saving
+          session_id: currentSessionId,
+          use_general_llm: useGeneralLLM, // Flag to use general LLM
         }),
       });
       
@@ -291,11 +337,27 @@ const Chat = ({
         });
       }
 
-      // Refresh session list to pick up any auto-generated session names from backend
+      // Auto-generate session name if this is the second user message
+      if (isSecondMessage && currentSessionId) {
+        const currentSession = chatSessions.find(s => s.id === currentSessionId);
+        // Only update if session has default name (starts with "New Chat" or "Chat Session")
+        if (currentSession && (
+          currentSession.session_name.startsWith('New Chat') || 
+          currentSession.session_name.startsWith('Chat Session') ||
+          currentSession.session_name === 'Untitled'
+        )) {
+          const generatedName = generateSessionName(userMessage);
+          try {
+            await updateSessionName(currentSessionId, generatedName);
+            console.log(`Session name updated to: ${generatedName}`);
+          } catch (error) {
+            console.error('Failed to update session name:', error);
+          }
+        }
+      }
+      
+      // Always refresh chat sessions to update first_messages data for the NavigationPane
       await loadChatSessions();
-
-      // Note: Session name generation is now handled automatically by the backend
-      // when the first substantive (non-greeting) question is asked
     } catch (error) {
       console.error('Error:', error);
       if (botMessageIndex !== null) {

@@ -10,7 +10,7 @@ const TeamManagementTab = ({ role, isTeamAdmin = false, userTeams = [] }) => {
     }}>
       <h1 style={{
         color: '#111827',
-        fontSize: '32px',
+        fontSize: '24px',
         fontWeight: 700,
         marginBottom: '24px',
         letterSpacing: '0.5px',
