@@ -1,0 +1,49 @@
+# Node modules
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Models (AI models, large files)
+models/
+backend/models/
+**/models/
+
+# Database files
+*.db
+*.sqlite
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build directories
+build/
+dist/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploads and temporary files
+uploads/
+temp/
+tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Lock files
+*.lock
+package-lock.json
+
+# Vector databases
+qdrant/
+qdrant_store/

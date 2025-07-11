@@ -6,7 +6,10 @@ npm-debug.log*
 # Environment
 .env 
 
+# Models (AI models, large files)
+models/
 /models
+backend/models/
 # Build
 /build
 /dist
