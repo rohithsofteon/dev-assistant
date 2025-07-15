@@ -1,8 +1,13 @@
 export const getBaseUrl = () => {
-  if (process.env.NODE_ENV === 'production') {
-    return 'https://rfp-assistant-backend.onrender.com';
-  }
-  return 'http://localhost:5000';
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  // TODO: Replace this with your actual production backend URL
+  const productionUrl = 'https://your-production-backend-url.com'; 
+  
+  // URL for local development
+  const developmentUrl = 'http://localhost:5000';
+
+  return isProduction ? productionUrl : developmentUrl;
 };
 
 export function generatePassword(length = 10) {

@@ -4,7 +4,7 @@ node_modules/
 npm-debug.log*
 
 # Environment
-.env 
+.env*
 
 # Models (AI models, large files)
 models/
